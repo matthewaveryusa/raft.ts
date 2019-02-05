@@ -1,10 +1,10 @@
-import { AbstractTimeoutEngine } from './interfaces'
+import { AbstractTimeoutEngine, variance_func_t } from './interfaces'
 
 export class NodeTimeoutEngine extends AbstractTimeoutEngine {
   private timeouts: Map<string, NodeJS.Timeout>
 
-  constructor() {
-    super()
+  constructor(variance_function: variance_func_t) {
+    super(variance_function)
     this.timeouts = new Map()
   }
 
@@ -25,6 +25,10 @@ export class NodeTimeoutEngine extends AbstractTimeoutEngine {
     this.timeouts.set(name, setTimeout(() => {
       this.timeouts.delete(name)
       callback()
-    }, timeout_ms))
+    }, this.variance_function(timeout_ms)))
+  }
+
+  public set_varied(name: string, timeout_ms: number, callback: () => void): void {
+    this.set(name, this.variance_function(timeout_ms), callback)
   }
 }

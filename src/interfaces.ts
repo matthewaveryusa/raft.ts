@@ -1,7 +1,13 @@
 import {Log, Message} from './messages'
 
+export type variance_func_t = (timeout_ms: number) => number
 export abstract class AbstractTimeoutEngine {
+    protected variance_function: variance_func_t
+    constructor(variance_function: variance_func_t) {
+        this.variance_function = variance_function
+    }
     public abstract set(name: string, timeout_ms: number, callback: () => void): void
+    public abstract set_varied(name: string, timeout_ms: number, callback: () => void): void
     public abstract clear(name: string): void
 }
 

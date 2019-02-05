@@ -8,7 +8,7 @@ const servers: Server[] = []
 config.forEach((val) => {
   const s = new Server(val, config,
     new SqliteStorageEngine(`${val.replace(':', '_')}.sqlite`),
-    new NodeTimeoutEngine(),
+    new NodeTimeoutEngine((timeout_ms) => timeout_ms * Math.random() + 1),
     new HttpMessagingEngine())
 
   s.start_server()

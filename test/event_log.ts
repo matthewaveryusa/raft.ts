@@ -4,14 +4,20 @@ export enum ops {
     Read,
 }
 
+export interface ILog {
+    name: string
+    args: any
+    ret: any
+}
+
 export class EventLog {
-    public logs: any[]
+    public logs: ILog[]
     constructor() {
         this.logs = []
     }
 
-    public add(name: string, val: any): void {
-        this.logs.push([name, val])
+    public add(name: string, args: object, ret: any): void {
+        this.logs.push({ name, args, ret})
     }
 
 }

@@ -16,12 +16,12 @@ export class TestStorageEngine extends AbstractStorageEngine {
 
    public kv_get(key: string): string|null {
        const ret = this.kv.get(key) || null
-       this.events.add('TestStorageEngine::kv_get', [key, ret])
+       this.events.add('TestStorageEngine::kv_get', {key}, ret)
        return ret
    }
 
    public kv_set(key: string, value: string): void {
-       this.events.add('TestStorageEngine::kv_set', [key, value])
+       this.events.add('TestStorageEngine::kv_set', { key, value}, null)
        this.kv.set(key, value)
    }
 
@@ -32,7 +32,7 @@ export class TestStorageEngine extends AbstractStorageEngine {
        } else if (idx < this.log.length) {
          logs = this.log.slice(Number(idx.toString()))
        }
-       this.events.add('TestStorageEngine::get_logs_after', [idx, logs])
+       this.events.add('TestStorageEngine::get_logs_after', { idx}, logs)
        return logs
    }
 
@@ -44,7 +44,7 @@ export class TestStorageEngine extends AbstractStorageEngine {
       } else if (log_idx <= this.log.length - 1) {
         ret = this.log[Number(log_idx.toString())].term
       }
-      this.events.add('TestStorageEngine::log_term', [idx, ret])
+      this.events.add('TestStorageEngine::log_term', {idx}, ret)
       return ret
    }
 
@@ -57,11 +57,11 @@ export class TestStorageEngine extends AbstractStorageEngine {
    }
 
    public add_log_to_storage(log: Log): void {
-       this.events.add('TestStorageEngine::add_log_to_storage', [log])
+       this.events.add('TestStorageEngine::add_log_to_storage', {log}, null)
    }
 
    public delete_invalid_logs_from_storage(idx: bigint): void {
-      this.events.add('TestStorageEngine::delete_invalid_logs_from_storage', [idx])
+      this.events.add('TestStorageEngine::delete_invalid_logs_from_storage', {idx}, null)
 
    }
   }

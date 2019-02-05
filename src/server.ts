@@ -122,6 +122,25 @@ export class Server {
 
     }
 
+    // make this server think it's the leader
+    // convenient for testing
+    public promote_to_leader(send_noop: boolean = false): void {
+      this.timeout_engine.clear('vote')
+      this.role = Role.leader
+      this.log('promoted to leader')
+      this.current_leader = this.my_addr
+      this.reset_volatile_peer_state()
+      for (const [peer_addr, p] of this.peers) {
+        this.reset_heartbeat(p)
+      }
+      if (send_noop) {
+        const log = new Log()
+        log.type = LogType.noop
+        log.data =  null
+        this.leader_append_entry(log)
+      }
+    }
+
     public start_server(): void {
       this.reset_vote_timeout()
       this.messaging_engine.start(this.my_addr, (msg: Message) => this.on_message(msg) )
@@ -238,7 +257,7 @@ export class Server {
     }
 
     public reset_vote_timeout() {
-      this.timeout_engine.set('vote', this.timeout_ms * (Math.random() + 1), () => this.candidate_start_vote())
+      this.timeout_engine.set_varied('vote', this.timeout_ms, () => this.candidate_start_vote())
     }
 
     public step_down(term: bigint): void {
@@ -556,18 +575,7 @@ export class Server {
         peer.vote_granted = true
       }
       if (this.has_vote_majority()) {
-        this.timeout_engine.clear('vote')
-        this.role = Role.leader
-        this.log('leader')
-        this.current_leader = this.my_addr
-        this.reset_volatile_peer_state()
-        for (const [peer_addr, p] of this.peers) {
-          this.reset_heartbeat(p)
-        }
-        const log = new Log()
-        log.type = LogType.noop
-        log.data =  null
-        this.leader_append_entry(log)
+        this.promote_to_leader(true)
       }
     }
 

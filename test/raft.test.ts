@@ -5,7 +5,7 @@ import { TestTimeoutEngine } from './test_timeouts'
 import { Server } from '../src/server'
 import { State } from '../src/state'
 
-import { VoteResponse } from '../src/messages'
+import { AppendRequest, AppendResponse, VoteRequest, VoteResponse } from '../src/messages'
 import { EventLog } from './event_log'
 
 function build_from_scratch() {
@@ -19,7 +19,7 @@ function build_from_scratch() {
     s.start_server()
 
     ev.logs.forEach((log) => {
-        console.log(log[0], log[1])
+        console.log(log)
     })
 }
 
@@ -42,7 +42,7 @@ function build_from_state() {
     s.start_server()
 
     ev.logs.forEach((log) => {
-        console.log(log[0], log[1])
+        console.log(log)
     })
 
 }
@@ -68,9 +68,9 @@ function become_candidate() {
 
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
-    ev.logs[3][1][2]()
+    ev.logs[3].args.callback()
     ev.logs.forEach((log) => {
-        console.log(log[0], log[1])
+        console.log(log)
     })
 
 }
@@ -92,9 +92,9 @@ function candidate_become_leader() {
 
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
-    ev.logs[3][1][2]()
+    ev.logs[3].args.callback()
     ev.logs.forEach((log) => {
-        console.log(log[0], log[1])
+        console.log(log)
     })
     const vote_response_s2 = new VoteResponse(BigInt(42000002), 's2', 's1', BigInt(43), true)
     s.on_message(vote_response_s2)
@@ -102,8 +102,158 @@ function candidate_become_leader() {
     s.on_message(vote_response_s3)
 }
 
+function accept_vote_request() {
+    console.log('accept vote request')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+
+    // s2 sends a request with a higher term number
+    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(43), BigInt(0), BigInt(0))
+    s.on_message(vote_request_s2)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function deny_vote_request() {
+    console.log('deny vote request')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+
+    // s2 sends a request with a higher term number
+    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(41), BigInt(0), BigInt(0))
+    s.on_message(vote_request_s2)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function client_request() {
+    console.log('client request')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+    s.promote_to_leader()
+
+    const ret = s.on_client_request(Buffer.from('test data'))
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function append_request() {
+    console.log('append request')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+
+    // s2 sends a request with a higher term number
+    const append_request_s2 = new AppendRequest(BigInt(42000000), 's2', 's1', BigInt(43),
+     BigInt(0), BigInt(0), BigInt(0), BigInt(0), [])
+    s.on_message(append_request_s2)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function append_response() {
+    console.log('append response')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+    s.promote_to_leader()
+
+    const ret = s.on_client_request(Buffer.from('test data'))
+    const append_response_s2 = new AppendResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
+    s.on_message(append_response_s2)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
 build_from_scratch()
+
 build_from_state()
+
 make_invalid_state()
+
 become_candidate()
+
 candidate_become_leader()
+
+accept_vote_request()
+
+deny_vote_request()
+
+client_request()
+
+append_request()
+
+append_response()

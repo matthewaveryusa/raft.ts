@@ -10,11 +10,11 @@ export class TestMessagingEngine extends AbstractMessagingEngine {
   }
 
  public start(address: string, on_message_cb: message_cb): void {
-    this.events.add('TestMessagingEngine::start', [address, on_message_cb])
+    this.events.add('TestMessagingEngine::start', {address, on_message_cb}, null)
   }
 
  public send(peer_addr: string, message: Message): void {
-    this.events.add('TestMessagingEngine::send', [peer_addr, message])
+    this.events.add('TestMessagingEngine::send', {peer_addr, message}, null)
   }
 
 }
