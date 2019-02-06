@@ -249,13 +249,6 @@ export class Server {
       }
     }
 
-    public next_log(peer: Peer): ILogIdxTerm {
-      return {
-        idx: peer.next_idx,
-        term: this.db.log_term(peer.next_idx),
-      }
-    }
-
     public reset_vote_timeout() {
       this.timeout_engine.set_varied('vote', this.timeout_ms, () => this.candidate_start_vote())
     }

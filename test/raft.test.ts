@@ -5,7 +5,7 @@ import { TestTimeoutEngine } from './test_timeouts'
 import { Server } from '../src/server'
 import { State } from '../src/state'
 
-import { AppendRequest, AppendResponse, VoteRequest, VoteResponse } from '../src/messages'
+import { AppendRequest, AppendResponse, Log, LogType, VoteRequest, VoteResponse } from '../src/messages'
 import { EventLog } from './event_log'
 
 function build_from_scratch() {
@@ -173,6 +173,7 @@ function client_request() {
 
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
+    const ret_err = s.on_client_request(Buffer.from('test data'))
     s.promote_to_leader()
 
     const ret = s.on_client_request(Buffer.from('test data'))
@@ -200,13 +201,28 @@ function append_request() {
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
 
-    // s2 sends a request with a higher term number
+    // s2 sends a request with a higher term number (heartbeat)
     const append_request_s2 = new AppendRequest(BigInt(42000000), 's2', 's1', BigInt(43),
      BigInt(0), BigInt(0), BigInt(0), BigInt(0), [])
     s.on_message(append_request_s2)
 
-    ev.logs.forEach((log) => {
-        console.log(log)
+    // s2 sends a request with a same term number (and data)
+    const log = new Log()
+    log.data = null
+    log.idx = BigInt(1)
+    log.term = BigInt(43)
+    log.type = LogType.noop
+    const append_request2_s2 = new AppendRequest(BigInt(42000001), 's2', 's1', BigInt(43),
+     BigInt(0), BigInt(0), BigInt(0), BigInt(1), [log])
+    s.on_message(append_request2_s2)
+
+    // advance the commit index
+    const append_request3_s2 = new AppendRequest(BigInt(42000002), 's2', 's1', BigInt(43),
+     BigInt(1), BigInt(43), BigInt(1), BigInt(1), [])
+    s.on_message(append_request3_s2)
+
+    ev.logs.forEach((event) => {
+        console.log(event)
     })
 }
 

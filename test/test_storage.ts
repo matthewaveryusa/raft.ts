@@ -58,6 +58,7 @@ export class TestStorageEngine extends AbstractStorageEngine {
 
    public add_log_to_storage(log: Log): void {
        this.events.add('TestStorageEngine::add_log_to_storage', {log}, null)
+       this.log.push(log)
    }
 
    public delete_invalid_logs_from_storage(idx: bigint): void {
