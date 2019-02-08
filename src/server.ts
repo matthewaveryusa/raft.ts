@@ -468,13 +468,15 @@ export class Server {
       for (const [peer_name, peer] of this.peers) {
         idxes.push(peer.match_idx)
       }
-      // 1 num = 1 idx = 0 : ceil(2/2) -1 = 0
-      // 2 num = 2 idx = 1 : ceil(3/2) -1 = 1
-      // 3 num = 2 idx = 1 : ceil(4/2) -1 = 1
-      // 4 num = 3 idx = 2 : ceil(5/2) -1 = 2
-      // 5 num = 3 idx = 2 : ceil(6/2) -1 = 2
 
-      const new_idx = idxes.sort()[Math.ceil((Object.keys(this.peers).length + 1) / 2) - 1]
+      idxes.sort().reverse()
+      // 1 num = 1 idx = 0 : floor(1/2) = 0 rev_idx = 0
+      // 2 num = 2 idx = 1 : floor(2/2) = 1 rev_idx = 0
+      // 3 num = 2 idx = 1 : floor(3/2) = 1 rev_idx = 0
+      // 4 num = 3 idx = 2 : floor(4/2) = 2 rev_idx = 1
+      // 5 num = 3 idx = 2 : floor(5/2) = 2 rev_idx = 1
+      const idx = Math.floor((this.peers.size + 1) / 2)
+      const new_idx = idxes[idx]
       if (new_idx > this.state.commit_idx) {
         this.state.commit_idx = new_idx
         this.save_state()
