@@ -192,7 +192,7 @@ function append_request() {
 
     se.kv.set('message_id_chunk', BigInt(42000000).toString())
     const state = new State()
-    state.commit_idx = BigInt(5000)
+    state.commit_idx = BigInt(0)
     state.current_term = BigInt(42)
     state.peer_addresses = ['s1', 's2', 's3', 's4']
     state.voted_for = 's2'
@@ -248,6 +248,71 @@ function append_response() {
     const ret = s.on_client_request(Buffer.from('test data'))
     const append_response_s2 = new AppendResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
     s.on_message(append_response_s2)
+    const append_response_s3 = new AppendResponse(BigInt(42000003), 's3', 's1', BigInt(42), false)
+    s.on_message(append_response_s3)
+    const append_response2_s3 = new AppendResponse(BigInt(42000005), 's3', 's1', BigInt(42), true)
+    s.on_message(append_response2_s3)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function trigger_heartbeat() {
+    console.log('trigger heartbeat')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(5000)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+    s.promote_to_leader()
+
+    ev.logs[9].args.callback()
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
+}
+
+function append_to_trailing_peer() {
+    console.log('append to trailing peer')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(0)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+    s.promote_to_leader()
+
+    let ret = s.on_client_request(Buffer.from('test data'))
+    const append_response_s2 = new AppendResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
+    s.on_message(append_response_s2)
+    const append_response_s3 = new AppendResponse(BigInt(42000003), 's3', 's1', BigInt(42), false)
+    s.on_message(append_response_s3)
+    // add another log. s3 has optimistic appends turned off
+    ret = s.on_client_request(Buffer.from('test data2'))
+    const append_response2_s3 = new AppendResponse(BigInt(42000005), 's3', 's1', BigInt(42), true)
+    // another append with 'test data2' should be sent to s3
+    s.on_message(append_response2_s3)
 
     ev.logs.forEach((log) => {
         console.log(log)
@@ -273,3 +338,7 @@ client_request()
 append_request()
 
 append_response()
+
+append_to_trailing_peer()
+
+trigger_heartbeat()

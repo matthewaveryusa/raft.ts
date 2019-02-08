@@ -302,8 +302,7 @@ export class Server {
     public candidate_start_vote(): void {
       this.timeout_engine.clear('vote')
       if (this.role === Role.leader) {
-        this.log(`I'm a leader, I can't start a vote`)
-        process.exit(1)
+        throw Error(`I'm a leader, I can't start a vote`)
       }
       this.log('candidate')
 
@@ -324,8 +323,7 @@ export class Server {
         this.send(peer, message)
         this.timeout_engine.set(message_id.toString(), this.message_timeout_ms, () => {
           if (peer.inflight_messages.delete(message_id) !== true) {
-            this.log('clearing vote message but already cleared')
-            process.exit(1)
+            throw Error('clearing vote message but already cleared')
           }
         })
         peer.inflight_messages.set(message_id, message)
@@ -347,8 +345,7 @@ export class Server {
 
       this.timeout_engine.set(message.id.toString(), this.message_timeout_ms, () => {
         if (peer.inflight_messages.delete(message.id) !== true) {
-          this.log('clearing append_entry message but already cleared')
-          process.exit(1)
+          throw Error('clearing append_entry message but already cleared')
         }
 
         // todo, maybe we should not wait for as long as the heartbeat since we know that this peer
@@ -361,8 +358,7 @@ export class Server {
 
     public leader_append_entry(log: Log): void {
       if (this.role !== Role.leader) {
-        this.log('error, appending log but not leader')
-        process.exit(1)
+        throw Error('error, appending log but not leader')
       }
       const idx = this.db.last_log_idx()
       const term = this.db.log_term(idx)
@@ -464,8 +460,7 @@ export class Server {
 
       // logs were not sent so we need to get them out of band
       // TODO
-      this.log('Out of band fetch not implemented')
-      process.exit(1)
+      throw Error('Out of band fetch not implemented')
     }
 
     public update_commit_idx() {
@@ -498,8 +493,7 @@ export class Server {
       if (msg.success === false) {
         // step back one
         if (peer.next_idx === BigInt(0)) {
-          this.log(`${msg.from} failed message, but it was the very first one in the stream`)
-          process.exit(1)
+          throw Error(`${msg.from} failed message, but it was the very first one in the stream`)
         }
         peer.next_idx = bigint_max(BigInt(0), peer.next_idx - BigInt(1))
         // shutoff optimistic appends
@@ -533,12 +527,12 @@ export class Server {
           if (request.last_idx < this.db.last_log_idx()) {
             // new entries were appended since the request was made,
             // and optimistic appends was turned off, so we kick-off an append
-            const idx = this.db.last_log_idx()
-            const term = this.db.log_term(idx)
-            const logs = this.db.get_logs_after(idx)
+            const prev_idx = request.last_idx
+            const prev_term = this.db.log_term(prev_idx)
+            const logs = this.db.get_logs_after(request.last_idx)
             const last_idx = this.db.last_log_idx()
             const message = new AppendRequest(this.unique_message_id(), this.my_addr, msg.from, this.state.current_term,
-             idx, term, this.state.commit_idx, last_idx, logs )
+             prev_idx, prev_term, this.state.commit_idx, last_idx, logs )
             this.send_append_entry(peer, message)
           }
         }
