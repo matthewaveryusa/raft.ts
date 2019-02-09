@@ -54,11 +54,11 @@ export class MemStorage extends AbstractStorageEngine {
    }
 
    public delete_invalid_logs_from_storage(idx: bigint): void {
-    const log_idx = idx - BigInt(1)
+    const log_idx = idx
     if (idx === BigInt(0)) {
         this.log = []
     } else if (log_idx <= this.log.length - 1) {
-        this.log = this.log.slice(Number(log_idx.toString()))
+        this.log = this.log.slice(0, Number(log_idx.toString()))
     }
    }
   }

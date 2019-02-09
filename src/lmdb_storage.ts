@@ -102,6 +102,8 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
     public delete_invalid_logs_from_storage(idx: bigint): void {
       const txn = this.env.beginTxn()
       const cursor = new lmdb.Cursor(txn, this.logdb)
+      // one after
+      idx++
       for (let found = cursor.goToRange(idx.toString()); found !== null; found = cursor.goToNext()) {
         cursor.del()
       }

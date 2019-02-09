@@ -405,6 +405,15 @@ export class Server {
         return
       }
 
+      if (msg.prev_idx < this.state.commit_idx) {
+        this.log(`rejecting append request from ${msg.from},`,
+                  `trying to clobber commited data, commit at ${this.state.commit_idx}`)
+        const message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
+        this.reset_vote_timeout()
+        this.send(peer, message)
+        return
+      }
+
       const idx = this.db.last_log_idx()
       const term = this.db.log_term(idx)
 

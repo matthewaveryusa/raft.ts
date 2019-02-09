@@ -5,7 +5,7 @@ import { TestTimeoutEngine } from './test_timeouts'
 import { Server } from '../src/server'
 import { State } from '../src/state'
 
-import { AppendRequest, AppendResponse, Log, LogType, VoteRequest, VoteResponse } from '../src/messages'
+import { AppendRequest, AppendResponse, Log, LogType, VoteRequest, VoteResponse, Message } from '../src/messages';
 import { EventLog } from './event_log'
 
 function build_from_scratch() {
@@ -319,6 +319,84 @@ function append_to_trailing_peer() {
     })
 }
 
+function find_common_log() {
+    console.log('find common log')
+    const ev = new EventLog()
+    const me = new TestMessagingEngine(ev)
+    const se = new TestStorageEngine(ev)
+    const te = new TestTimeoutEngine(ev)
+
+    const l1 = new Log()
+    l1.data = Buffer.from('1')
+    l1.idx = BigInt(1)
+    l1.term = BigInt(40)
+    l1.type = LogType.message
+    se.add_log_to_storage(l1)
+    const l2 = new Log()
+    l2.data = Buffer.from('2')
+    l2.idx = BigInt(2)
+    l2.term = BigInt(41)
+    l2.type = LogType.message
+    se.add_log_to_storage(l2)
+    const l3 = new Log()
+    l3.data = Buffer.from('3')
+    l3.idx = BigInt(3)
+    l3.term = BigInt(42)
+    l3.type = LogType.message
+    se.add_log_to_storage(l3)
+
+    se.kv.set('message_id_chunk', BigInt(42000000).toString())
+    const state = new State()
+    state.commit_idx = BigInt(1)
+    state.current_term = BigInt(42)
+    state.peer_addresses = ['s1', 's2', 's3', 's4']
+    state.voted_for = 's2'
+    se.kv.set('state', state.toString())
+
+    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    s.start_server()
+
+    const l33 = new Log()
+    l33.data = Buffer.from('33')
+    l33.idx = BigInt(3)
+    l33.term = BigInt(43)
+    l33.type = LogType.message
+    const l4 = new Log()
+    l4.data = Buffer.from('44')
+    l4.idx = BigInt(4)
+    l4.term = BigInt(43)
+    l4.type = LogType.message
+
+    // bad term
+    const append_request_s2_fail1 = new AppendRequest(BigInt(42000000), 's2', 's1', BigInt(12),
+    BigInt(2), BigInt(12), BigInt(1), BigInt(4), [l33, l4])
+    s.on_message(append_request_s2_fail1)
+
+    // bad prev term
+    const append_request_s2_fail2 = new AppendRequest(BigInt(42000001), 's2', 's1', BigInt(43),
+    BigInt(2), BigInt(43), BigInt(1), BigInt(4), [l33, l4])
+    s.on_message(append_request_s2_fail2)
+
+    // bad prev index
+    const append_request_s2_fail3 = new AppendRequest(BigInt(42000002), 's2', 's1', BigInt(43),
+    BigInt(15), BigInt(42), BigInt(1), BigInt(4), [l33, l4])
+    s.on_message(append_request_s2_fail3)
+
+    // trying to clobber commited -- no bueno
+    const append_request_s2_fail4 = new AppendRequest(BigInt(42000003), 's2', 's1', BigInt(43),
+    BigInt(0), BigInt(0), BigInt(1), BigInt(4), [l33, l4])
+    s.on_message(append_request_s2_fail4)
+
+    // ok, delete bad logs
+    const append_request_s2 = new AppendRequest(BigInt(42000004), 's2', 's1', BigInt(43),
+     BigInt(2), BigInt(41), BigInt(0), BigInt(4), [l33, l4])
+    s.on_message(append_request_s2)
+
+    ev.logs.forEach((l) => {
+        console.log(l)
+    })
+}
+
 build_from_scratch()
 
 build_from_state()
@@ -342,3 +420,5 @@ append_response()
 append_to_trailing_peer()
 
 trigger_heartbeat()
+
+find_common_log()
