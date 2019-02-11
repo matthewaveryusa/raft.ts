@@ -11,5 +11,6 @@
         "no-console": [false],
         "max-classes-per-file": [false, 1]
     },
-    "rulesDirectory": []
+    "rulesDirectory": [],
+    "no-empty": [true, "allow-empty-catch"]
 }

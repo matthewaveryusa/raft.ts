@@ -20,18 +20,6 @@ function bigint_min(lhs: bigint, rhs: bigint): bigint {
     return rhs
   }
 
-function bigint_max(lhs: bigint, rhs: bigint): bigint {
-    if (lhs > rhs) {
-      return lhs
-    }
-    return rhs
-  }
-
-function monotonic_ms(): number {
-    const [seconds, nanoseconds] = process.hrtime()
-    return seconds * 1000 + Math.round(nanoseconds / 1e6)
-  }
-
 class Peer {
     public addr: string
     public vote_granted: boolean
@@ -62,26 +50,26 @@ export class Server {
     private readonly timeout_ms: number
     private readonly leader_heartbeat_ms: number
     private readonly message_timeout_ms: number
+    private readonly id_slab_size: bigint
 
     private role: Role
     private current_leader: string|null
     private peers: Map<string, Peer>
     private next_message_id: bigint
     private state: State
-    private last_vote_granted: number
 
     constructor(address: string,
                 peers_bootstrap: string[],
                 db: AbstractStorageEngine,
                 timeout_engine: AbstractTimeoutEngine,
-                messaging_engine: AbstractMessagingEngine) {
+                messaging_engine: AbstractMessagingEngine,
+                id_slab_size?: bigint) {
       // there's a lot of state so the constructor is pretty sizeable
 
       this.timeout_engine = timeout_engine
       this.messaging_engine = messaging_engine
       this.db = db
-
-      this.last_vote_granted = 0
+      this.id_slab_size = id_slab_size || BigInt(1000000)
 
       this.timeout_ms = 5000
       this.leader_heartbeat_ms = this.timeout_ms / 2
@@ -127,7 +115,6 @@ export class Server {
     public promote_to_leader(send_noop: boolean = false): void {
       this.timeout_engine.clear('vote')
       this.role = Role.leader
-      this.log('promoted to leader')
       this.current_leader = this.my_addr
       this.reset_volatile_peer_state()
       for (const [peer_addr, p] of this.peers) {
@@ -158,15 +145,18 @@ export class Server {
     }
 
     public on_message(msg: Message) {
+
+      if (msg.to !== this.my_addr) {
+        return
+      }
+
       const peer = this.peers.get(msg.from)
       if (!peer) {
-        this.log('invalid peer', msg.from)
         return
       }
 
       if (peer.max_message_id >= msg.id) {
         // received out of order old message, ignoring
-        this.log(`received out of order message, currently @ ${peer.max_message_id}`, msg)
         return
       }
 
@@ -174,27 +164,27 @@ export class Server {
 
       switch (msg.type) {
         case MessageType.vote_request:
-          this.on_vote_request(msg as VoteRequest)
+          this.on_vote_request(msg as VoteRequest, peer)
           break
         case MessageType.vote_response:
           {
-          const request = this.pop_inflight_message(peer, msg.id)
+          const request = this.pop_inflight_message(peer, msg.id) as VoteRequest
           if (request === null) { return }
-          this.on_vote_response(msg as VoteResponse)
+          this.on_vote_response(request, msg as VoteResponse, peer)
           }
           break
         case MessageType.append_request:
-          this.on_append_request(msg as AppendRequest)
+          this.on_append_request(msg as AppendRequest, peer)
           break
         case MessageType.append_response:
           {
           const request = this.pop_inflight_message(peer, msg.id) as AppendRequest
           if (request === null) { return }
-          this.on_append_response(request, msg as AppendResponse)
+          this.on_append_response(request, msg as AppendResponse, peer)
           }
           break
         default:
-          this.log('unknown message type', msg.type)
+          return
       }
     }
 
@@ -254,13 +244,11 @@ export class Server {
     }
 
     public step_down(term: bigint): void {
-      this.log(`stepping down, was ${this.state.current_term}, now ${term}`)
       this.state.current_term = term
       this.state.voted_for = null
       this.save_state()
 
       this.role = Role.follower
-      this.log('follower')
       this.current_leader = null
       this.reset_volatile_peer_state()
       this.reset_vote_timeout()
@@ -269,7 +257,6 @@ export class Server {
     public reset_inflight_messages(peer: Peer): void {
       for (const [id, message] of peer.inflight_messages) {
         this.timeout_engine.clear(id.toString())
-        this.log(`removed inflight message ${id}`)
       }
       peer.inflight_messages = new Map()
     }
@@ -302,9 +289,8 @@ export class Server {
     public candidate_start_vote(): void {
       this.timeout_engine.clear('vote')
       if (this.role === Role.leader) {
-        throw Error(`I'm a leader, I can't start a vote`)
+        return
       }
-      this.log('candidate')
 
       this.role = Role.candidate
       this.state.current_term++
@@ -322,9 +308,7 @@ export class Server {
           this.state.current_term, idx, term)
         this.send(peer, message)
         this.timeout_engine.set(message_id.toString(), this.message_timeout_ms, () => {
-          if (peer.inflight_messages.delete(message_id) !== true) {
-            throw Error('clearing vote message but already cleared')
-          }
+          peer.inflight_messages.delete(message_id)
         })
         peer.inflight_messages.set(message_id, message)
       }
@@ -332,8 +316,8 @@ export class Server {
     }
 
     public unique_message_id(): bigint {
-      if (this.next_message_id % BigInt(1000000) === BigInt(0)) {
-        this.db.kv_set('message_id_chunk', (this.next_message_id + BigInt(1000000)).toString())
+      if (this.next_message_id % this.id_slab_size === BigInt(0)) {
+        this.db.kv_set('message_id_chunk', (this.next_message_id + this.id_slab_size).toString())
       }
       this.next_message_id++
       return this.next_message_id
@@ -344,13 +328,10 @@ export class Server {
       this.send(peer, message)
 
       this.timeout_engine.set(message.id.toString(), this.message_timeout_ms, () => {
-        if (peer.inflight_messages.delete(message.id) !== true) {
-          throw Error('clearing append_entry message but already cleared')
-        }
-
+        peer.inflight_messages.delete(message.id)
         // todo, maybe we should not wait for as long as the heartbeat since we know that this peer
         // has missing logs, but also the peer isn't responding, so it may be down.
-        // for now we wait for th heartbeat, or a new append, to kickstart communication again
+        // for now we wait for the heartbeat, or a new append, to kickstart communication again
       })
 
       peer.inflight_messages.set(message.id, message)
@@ -358,7 +339,7 @@ export class Server {
 
     public leader_append_entry(log: Log): void {
       if (this.role !== Role.leader) {
-        throw Error('error, appending log but not leader')
+        return
       }
       const idx = this.db.last_log_idx()
       const term = this.db.log_term(idx)
@@ -388,27 +369,20 @@ export class Server {
       this.messaging_engine.send(peer.addr, message)
     }
 
-    public on_append_request(msg: AppendRequest): void {
+    public on_append_request(msg: AppendRequest, peer: Peer): void {
+      let message: Message
       if (this.state.current_term < msg.term) {
         this.step_down(msg.term)
       }
 
-      const peer = this.peers.get(msg.from)
-      if (!peer) {
-          return
-      }
-
       if (this.state.current_term > msg.term) {
-        this.log(`rejecting append request from ${msg.from}, term ${this.state.current_term} > ${msg.term}`)
-        const response = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
-        this.messaging_engine.send(peer.addr, response)
+        message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
+        this.messaging_engine.send(peer.addr, message)
         return
       }
 
       if (msg.prev_idx < this.state.commit_idx) {
-        this.log(`rejecting append request from ${msg.from},`,
-                  `trying to clobber commited data, commit at ${this.state.commit_idx}`)
-        const message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
+        message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
         this.reset_vote_timeout()
         this.send(peer, message)
         return
@@ -431,46 +405,27 @@ export class Server {
         msg.prev_idx === BigInt(0)
 
       if (!found_common_log) {
-        this.log(`rejecting append request from ${msg.from}, no common log for prev ${msg.prev_idx}`)
-        const message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
+        const failure_message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, false)
         this.reset_vote_timeout()
-        this.send(peer, message)
+        this.send(peer, failure_message)
         return
       }
 
-      if (msg.last_idx === msg.prev_idx) {
-        // this is a heartbeat
-        // msg.logs.length should be 0
-        const previous_commit_idx = this.state.commit_idx
-        this.state.commit_idx = bigint_min(msg.commit_idx, this.db.last_log_idx())
-        if (previous_commit_idx !== this.state.commit_idx) {
+      if (msg.prev_idx !== idx) {
+        this.db.delete_invalid_logs_from_storage(msg.prev_idx)
+      }
+      msg.logs.forEach((log) => {
+        this.db.add_log_to_storage(log)
+      })
+      const previous_commit_idx = this.state.commit_idx
+      this.state.commit_idx = bigint_min(msg.commit_idx, this.db.last_log_idx())
+      if (previous_commit_idx !== this.state.commit_idx) {
           this.save_state()
         }
-        this.reset_vote_timeout()
-        const message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, true)
-        this.send(peer, message)
-        return
+      this.reset_vote_timeout()
+      message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, true)
+      this.send(peer, message)
       }
-
-      if (msg.logs.length !== 0) {
-        if (msg.prev_idx !== idx) {
-          this.db.delete_invalid_logs_from_storage(msg.prev_idx)
-        }
-        msg.logs.forEach((log) => {
-          this.db.add_log_to_storage(log)
-        })
-        this.state.commit_idx = bigint_min(msg.commit_idx, this.db.last_log_idx())
-        this.save_state()
-        this.reset_vote_timeout()
-        const message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, true)
-        this.send(peer, message)
-        return
-      }
-
-      // logs were not sent so we need to get them out of band
-      // TODO
-      throw Error('Out of band fetch not implemented')
-    }
 
     public update_commit_idx() {
       const idxes = [this.db.last_log_idx()]
@@ -494,19 +449,19 @@ export class Server {
       return false
     }
 
-    public on_append_response(request: AppendRequest, msg: AppendResponse): void {
-      this.log(`append from ${msg.from} success ${msg.success} term ${msg.term} index ${request.last_idx}` +
-      ` pi ${request.prev_idx} pt ${request.prev_term}`)
-      if (this.role !== Role.leader) { return }
-      const peer = this.peers.get(msg.from)
-      if (!peer) { return }
+    public on_append_response(request: AppendRequest, msg: AppendResponse, peer: Peer): void {
       // const peer_state = this.peers[msg.from]
       if (msg.success === false) {
         // step back one
-        if (peer.next_idx === BigInt(0)) {
-          throw Error(`${msg.from} failed message, but it was the very first one in the stream`)
+        if (peer.next_idx <= BigInt(0)) {
+          // The peer has rejected everything!
+          // The least surprising thing to do is to retry, starting by sending the last
+          // log on ther server?
+          // TODO log this?
+          peer.next_idx = this.db.last_log_idx() - BigInt(1)
+        } else {
+          peer.next_idx = peer.next_idx - BigInt(1)
         }
-        peer.next_idx = bigint_max(BigInt(0), peer.next_idx - BigInt(1))
         // shutoff optimistic appends
         peer.accepting_optimistic_appends = false
         // clear any inflight messages which may have optimistic appends which we'll ignore
@@ -516,12 +471,6 @@ export class Server {
         const term = this.db.log_term(idx)
 
         const logs = this.db.get_logs_after(idx)
-        if (logs.length) {
-          this.log(`append response, sending logs after idx ${idx}, got ${logs.length} logs, ` +
-          `idx ${logs[0].idx}-${logs[logs.length - 1].idx}`)
-        } else {
-          this.log(`append response, sending logs after idx ${idx}, none found`)
-        }
         const last_idx = this.db.last_log_idx()
         const message = new AppendRequest(this.unique_message_id(), this.my_addr, msg.from, this.state.current_term,
           idx, term, this.state.commit_idx, last_idx, logs)
@@ -560,15 +509,11 @@ export class Server {
       })
     }
 
-    public on_vote_response(msg: VoteResponse): void {
-      this.log(`vote from ${msg.from} granted ${msg.vote_granted} term ${msg.term}`)
-      if (this.role !== Role.candidate) { return }
+    public on_vote_response(request: VoteRequest, msg: VoteResponse, peer: Peer): void {
       if (msg.term > this.state.current_term) {
         this.step_down(msg.term)
         return
       }
-      const peer = this.peers.get(msg.from)
-      if (!peer) { return }
       if (msg.vote_granted) {
         peer.vote_granted = true
       }
@@ -577,16 +522,7 @@ export class Server {
       }
     }
 
-    public on_vote_request(msg: VoteRequest): void {
-      if (monotonic_ms() - this.last_vote_granted < this.timeout_ms) {
-        this.log(`granted vote too recently so ignoring this vote request`)
-        return
-      }
-      const peer =  this.peers.get(msg.from)
-      if (!peer) {
-          return
-      }
-
+    public on_vote_request(msg: VoteRequest, peer: Peer): void {
       if (this.state.current_term < msg.term) {
         this.step_down(msg.term)
       }
@@ -599,7 +535,6 @@ export class Server {
         msg_log_not_behind
       ) {
         vote_granted = true
-        this.last_vote_granted = monotonic_ms()
         this.state.voted_for = msg.from
         this.save_state()
         this.reset_vote_timeout()
