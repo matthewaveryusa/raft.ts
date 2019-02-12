@@ -9,8 +9,8 @@
         "semicolon": [true, "never"],
         "variable-name": [true, "allow-snake-case"],
         "no-console": [false],
-        "max-classes-per-file": [false, 1]
+        "max-classes-per-file": [false, 1],
+        "no-empty": [true, "allow-empty-catch"]
     },
-    "rulesDirectory": [],
-    "no-empty": [true, "allow-empty-catch"]
+    "rulesDirectory": []
 }

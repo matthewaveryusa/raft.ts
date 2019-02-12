@@ -287,7 +287,7 @@ function append_response() {
     s.start_server()
     s.promote_to_leader()
 
-    const ret = s.on_client_request(Buffer.from('test data'))
+    s.on_client_request(Buffer.from('test data'))
     const append_response_s2 = new AppendResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
     s.on_message(append_response_s2)
     const append_response_s3 = new AppendResponse(BigInt(42000003), 's3', 's1', BigInt(42), false)

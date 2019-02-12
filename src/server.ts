@@ -334,6 +334,9 @@ export class Server {
         // for now we wait for the heartbeat, or a new append, to kickstart communication again
       })
 
+      // We delete the logs from the saved request as the logs can get large
+      // so and we don't want to save them too long in-memory
+      message.logs = []
       peer.inflight_messages.set(message.id, message)
     }
 
@@ -442,6 +445,15 @@ export class Server {
       const idx = Math.floor((this.peers.size + 1) / 2)
       const new_idx = idxes[idx]
       if (new_idx > this.state.commit_idx) {
+        /*
+        // our implementation has new leaders send a no-op which guarantees the 
+        // the latest log to be commited will have the current term
+        // only update the commit index if it's part of the current leader term
+        const term = this.db.log_term(new_idx)
+        if (term !== this.state.current_term) {
+          return false
+        }
+        */
         this.state.commit_idx = new_idx
         this.save_state()
         return true
