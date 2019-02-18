@@ -48,7 +48,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
  from log
   where idx = CAST(? as INTEGER) and dirty = 0`)
       this.get_logs_sql = this.db.prepare(
-`select CAST(idx as TEXT) as idx, CAST(term as TEXT), data, type
+`select CAST(idx as TEXT) as idx, CAST(term as TEXT) as term, data, type
  from log
  where idx > CAST(? as INTEGER) and dirty = 0`)
 
@@ -92,11 +92,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
     public last_log_idx(): bigint {
       if (this.cached_log_idx === null) {
         const row = this.last_log_idx_sql.get()
-        if (row) {
-          this.cached_log_idx = BigInt(row.idx)
-        } else {
-          this.cached_log_idx = BigInt(0)
-        }
+        this.cached_log_idx = BigInt(row.idx)
       }
       return this.cached_log_idx
     }

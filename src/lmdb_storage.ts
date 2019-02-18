@@ -19,13 +19,6 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
       this.env = new Env()
 
       const my_path = path.join(db_name)
-      try {
-        mkdirSync(my_path)
-      } catch (e) {
-        if (e.code !== 'EEXIST') {
-          throw e
-        }
-      }
       this.env.open({
         mapSize: 2 * 1024 * 1024 * 1024, // maximum database size
         maxDbs: 2,
@@ -64,12 +57,13 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
         idx++
         for (let found = cursor.goToRange(idx.toString().padStart(20, '0'));
           found !== null; found = cursor.goToNext()) {
-          const data = msgpack.decode(cursor.getCurrentString())
+          const data = msgpack.decode(cursor.getCurrentBinaryUnsafe())
           const log = new Log()
           log.term = BigInt(data[0])
           log.idx = BigInt(found)
           log.data = data[1]
           log.type = data[2]
+          logs.push(log)
         }
         txn.commit()
         return logs
@@ -77,7 +71,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
 
     public log_term(idx: bigint): bigint {
         const txn = this.env.beginTxn()
-        const value = txn.getBinary(this.kvdb, idx.toString().padStart(20, '0'))
+        const value = txn.getBinary(this.logdb, idx.toString().padStart(20, '0'))
         txn.commit()
         if (value) {
         const row = msgpack.decode(value)
@@ -104,7 +98,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
 
     public add_log_to_storage(log: Log): void {
       const txn = this.env.beginTxn()
-      txn.putBinary(this.kvdb, log.idx.toString().padStart(20, '0'),
+      txn.putBinary(this.logdb, log.idx.toString().padStart(20, '0'),
        msgpack.encode([log.term.toString(), log.data, log.type]).slice())
       txn.commit()
       this.cached_log_idx = log.idx
@@ -116,7 +110,8 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
       const cursor = new Cursor(txn, this.logdb)
       // one after
       idx++
-      for (let found = cursor.goToRange(idx.toString()); found !== null; found = cursor.goToNext()) {
+      for (let found = cursor.goToRange(idx.toString().padStart(20, '0'));
+        found !== null; found = cursor.goToNext()) {
         cursor.del()
       }
       txn.commit()
