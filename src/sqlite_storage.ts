@@ -70,7 +70,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
     }
 
     public get_logs_after(idx: bigint): Log[] {
-      return this.get_logs_sql.all(idx).map((val) => {
+      return this.get_logs_sql.all(idx.toString()).map((val) => {
         const log = new Log()
         log.term = BigInt(val.term)
         log.idx = BigInt(val.idx)

@@ -446,7 +446,7 @@ export class Server {
       const new_idx = idxes[idx]
       if (new_idx > this.state.commit_idx) {
         /*
-        // our implementation has new leaders send a no-op which guarantees the 
+        // our implementation has new leaders send a no-op which guarantees the
         // the latest log to be commited will have the current term
         // only update the commit index if it's part of the current leader term
         const term = this.db.log_term(new_idx)

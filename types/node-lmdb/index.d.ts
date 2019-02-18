@@ -1,3 +1,5 @@
+declare module 'node-lmdb' {
+
 export class Cursor {
     constructor(txn: Txn, db: Dbi);
     close(): any;
@@ -43,4 +45,5 @@ export class Txn {
     getBinary(dbi: Dbi, key: string|number|Buffer): Buffer|null;
     putBinary(dbi: Dbi, key: string|number|Buffer, value: Buffer): void;
     putString(dbi: Dbi, key: string|number|Buffer, value: string): void;
+}
 }

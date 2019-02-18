@@ -1,25 +1,35 @@
-// lmdb storage
+import { mkdirSync } from 'fs'
 import mp = require('msgpack5')
+import {Cursor, Dbi, Env} from 'node-lmdb'
+import * as path from 'path'
 import {AbstractStorageEngine} from './interfaces'
 import {Log} from './messages'
-import * as lmdb from './node-lmdb'
 
 const msgpack = mp()
 
 export class LmdbStorageEngine extends AbstractStorageEngine {
     private cached_log_idx: bigint|null
-    private env: lmdb.Env
-    private kvdb: lmdb.Dbi
-    private logdb: lmdb.Dbi
+    private env: Env
+    private kvdb: Dbi
+    private logdb: Dbi
 
     constructor(db_name: string) {
       super()
       this.cached_log_idx = null
-      this.env = new lmdb.Env()
+      this.env = new Env()
+
+      const my_path = path.join(db_name)
+      try {
+        mkdirSync(my_path)
+      } catch (e) {
+        if (e.code !== 'EEXIST') {
+          throw e
+        }
+      }
       this.env.open({
         mapSize: 2 * 1024 * 1024 * 1024, // maximum database size
-        maxDbs: 3,
-        path: `${__dirname}/"${db_name}`,
+        maxDbs: 2,
+        path: my_path,
     })
 
       this.kvdb = this.env.openDbi({
@@ -31,6 +41,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
         create: true, // will create if database did not exist
         name: 'log',
     })
+
     }
 
     public kv_get(key: string): string|null {
@@ -49,7 +60,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
     public get_logs_after(idx: bigint): Log[] {
         const logs: Log[] = []
         const txn = this.env.beginTxn()
-        const cursor = new lmdb.Cursor(txn, this.logdb)
+        const cursor = new Cursor(txn, this.logdb)
         idx++
         for (let found = cursor.goToRange(idx.toString().padStart(20, '0'));
           found !== null; found = cursor.goToNext()) {
@@ -79,7 +90,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
     public last_log_idx(): bigint {
       if (this.cached_log_idx === null) {
         const txn = this.env.beginTxn()
-        const cursor = new lmdb.Cursor(txn, this.logdb)
+        const cursor = new Cursor(txn, this.logdb)
         const idx = cursor.goToLast()
         txn.commit()
         if (idx) {
@@ -100,8 +111,9 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
     }
 
     public delete_invalid_logs_from_storage(idx: bigint): void {
+
       const txn = this.env.beginTxn()
-      const cursor = new lmdb.Cursor(txn, this.logdb)
+      const cursor = new Cursor(txn, this.logdb)
       // one after
       idx++
       for (let found = cursor.goToRange(idx.toString()); found !== null; found = cursor.goToNext()) {

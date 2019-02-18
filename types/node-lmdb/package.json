@@ -1,0 +1,9 @@
+{
+  "name": "@types/node-lmdb",
+  "version": "1.0.0",
+  "description": "ts bindings for node-lmdb",
+  "scripts": {
+  },
+  "author": "",
+  "license": ""
+}

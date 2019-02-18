@@ -7,11 +7,12 @@
         "preserveConstEnums": true,
         "sourceMap": true,
         "strict": true,
-        "outDir": "build"
+        "outDir": "build",
+        "typeRoots": ["node_modules/@types", "./types"]
     },
     "include": [
         "src/**/*",
-        "test/**/*"
+        "test/**/*",
     ],
     "exclude": [
         "node_modules",

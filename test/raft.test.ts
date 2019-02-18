@@ -5,7 +5,6 @@ import { TestTimeoutEngine } from './test_timeouts'
 import { Server } from '../src/server'
 import { State } from '../src/state'
 
-import { callbackify } from 'util'
 import { AppendRequest, AppendResponse, Log, LogType, Message,
     MessageType, VoteRequest, VoteResponse } from '../src/messages'
 import { EventLog } from './event_log'
