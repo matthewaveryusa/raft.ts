@@ -61,4 +61,8 @@ export class MemStorage extends AbstractStorageEngine {
         this.log = this.log.slice(0, Number(log_idx.toString()))
     }
    }
+
+   public latest_config_before_or_at(idx: bigint): Log | null {
+    return null
+   }
   }

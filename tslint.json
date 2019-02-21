@@ -10,7 +10,8 @@
         "variable-name": [true, "allow-snake-case"],
         "no-console": [false],
         "max-classes-per-file": [false, 1],
-        "no-empty": [true, "allow-empty-catch"]
+        "no-empty": [true, "allow-empty-catch"],
+        "max-line-length": [true, 640]
     },
     "rulesDirectory": []
 }

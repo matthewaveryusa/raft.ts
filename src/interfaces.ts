@@ -19,6 +19,7 @@ export abstract class AbstractStorageEngine {
     public abstract last_log_idx(): bigint
     public abstract add_log_to_storage(log: Log): void
     public abstract delete_invalid_logs_from_storage(idx: bigint): void
+    public abstract latest_config_before_or_at(idx: bigint): Log | null
 }
 
 export type message_cb = (message: Message) => void

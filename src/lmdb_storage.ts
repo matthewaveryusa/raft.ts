@@ -13,14 +13,14 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
     private kvdb: Dbi
     private logdb: Dbi
 
-    constructor(db_name: string) {
+    constructor(db_name: string, db_size_bytes: number) {
       super()
       this.cached_log_idx = null
       this.env = new Env()
 
       const my_path = path.join(db_name)
       this.env.open({
-        mapSize: 2 * 1024 * 1024 * 1024, // maximum database size
+        mapSize: db_size_bytes,
         maxDbs: 2,
         path: my_path,
     })
@@ -117,4 +117,8 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
       txn.commit()
       this.cached_log_idx = null
     }
+
+    public latest_config_before_or_at(idx: bigint): Log | null {
+      return null
+  }
   }

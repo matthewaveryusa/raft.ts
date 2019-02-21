@@ -14,6 +14,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
     private get_logs_sql: sqlite.Statement
     private kv_get_sql: sqlite.Statement
     private kv_set_sql: sqlite.Statement
+    private latest_config_before_or_at_sql: sqlite.Statement
 
     private cached_log_idx: bigint|null
 
@@ -23,7 +24,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
       this.db.exec(`CREATE TABLE IF NOT EXISTS kv (key text, value text);
   CREATE TABLE IF NOT EXISTS log (idx INT, term INT, data BLOB, type TEXT, dirty INT);
   CREATE UNIQUE INDEX IF NOT EXISTS kv_key on kv(key);
-  CREATE UNIQUE INDEX IF NOT EXISTS log_idx_term on log(idx, term, dirty);
+  CREATE UNIQUE INDEX IF NOT EXISTS log_idx_term on log(idx, term, dirty, type);
   CREATE UNIQUE INDEX IF NOT EXISTS log_idx on log(idx, dirty);
   `)
       // sql
@@ -51,6 +52,11 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
 `select CAST(idx as TEXT) as idx, CAST(term as TEXT) as term, data, type
  from log
  where idx > CAST(? as INTEGER) and dirty = 0`)
+      this.latest_config_before_or_at_sql =  this.db.prepare(
+`select CAST(idx as TEXT) as idx, CAST(term as TEXT) as term, data, type
+ from log
+  where type = 'C' and dirty = 0 and idx <= CAST(? as INTEGER)
+  order by idx desc limit 1`)
 
       this.kv_get_sql = this.db.prepare('select value from kv where key = ?')
       this.kv_set_sql = this.db.prepare('replace into kv (key,value) values (?,?)')
@@ -105,5 +111,19 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
     public delete_invalid_logs_from_storage(idx: bigint): void {
       this.delete_invalid_logs_sql.run(idx.toString())
       this.cached_log_idx = null
+    }
+
+    public latest_config_before_or_at(idx: bigint): Log| null {
+      const row = this.latest_config_before_or_at_sql.get(idx.toString())
+      if (row) {
+        const log = new Log()
+        log.term = BigInt(row.term)
+        log.idx = BigInt(row.idx)
+        log.type = row.type
+        log.data = row.data
+        return log
+      } else {
+        return null
+      }
     }
   }

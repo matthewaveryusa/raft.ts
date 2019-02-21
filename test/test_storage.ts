@@ -70,4 +70,8 @@ export class TestStorageEngine extends AbstractStorageEngine {
        }
        this.events.add('TestStorageEngine::delete_invalid_logs_from_storage', {idx}, null)
     }
+
+    public latest_config_before_or_at(idx: bigint): Log | null {
+        return null
+    }
   }

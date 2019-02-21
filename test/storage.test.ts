@@ -1,11 +1,11 @@
 import {expect} from 'chai'
 import * as del from 'del'
+import { mkdirSync } from 'fs'
 import { AbstractStorageEngine } from '../src/interfaces'
 import {LmdbStorageEngine} from '../src/lmdb_storage'
 import { MemStorage } from '../src/mem_storage'
 import {Log, LogType} from '../src/messages'
 import {SqliteStorageEngine} from '../src/sqlite_storage'
-import { mkdirSync } from 'fs';
 // chai uses these
 /* tslint:disable no-unused-expression*/
 
@@ -17,7 +17,7 @@ try {
     throw e
   }
 }
-const lmdb = new LmdbStorageEngine('test.lmdb')
+const lmdb = new LmdbStorageEngine('test.lmdb', 2 * 1024 * 1024 * 1024)
 const sqlite = new SqliteStorageEngine('test.sqlite3')
 const mem = new MemStorage()
 
