@@ -61,10 +61,6 @@ export class Server {
     private peers: Map<string, Peer>
     private next_message_id: bigint
     private state: State
-    // there are a lot of extra queries to the database when there are config changes
-    // in the log, so if there are no config changes in the log we skip a lot of the
-    // database lookups with this flag
-    private configs_in_transition: boolean
 
     constructor(address: string,
                 peers_bootstrap: string[],
@@ -106,12 +102,6 @@ export class Server {
         this.state = new State()
         peers_bootstrap.forEach((peer_addr) => this.state.peer_addresses.push(peer_addr.toString()))
         this.save_state()
-      }
-      const last_config_log = this.db.latest_config_before_or_at(this.db.last_log_idx())
-      if (last_config_log === null || last_config_log.idx === this.state.config_idx) {
-        this.configs_in_transition = false
-      } else {
-        this.configs_in_transition = true
       }
       this.reconcile_peers_with_state()
 
@@ -155,14 +145,20 @@ export class Server {
       if (this.role !== Role.leader) {
         return { error: 'not_leader', leader: this.current_leader }
       }
-      if (this.state.peer_addresses_old.length !== 0) {
-        return { error: 'other_config_change_inflight', leader: this.current_leader }
+      let old_peers
+      if (this.state.peer_addresses_old.length) {
+        old_peers = this.state.peer_addresses_old
+      } else {
+        old_peers = this.state.peer_addresses
       }
-      this.configs_in_transition = true
       const log = new Log()
-      log.data = Buffer.from(JSON.stringify({old_peers: this.state.peer_addresses, new_peers: peers}))
+      log.data = Buffer.from(JSON.stringify({old_peers, new_peers: peers}))
       log.type = LogType.config
       this.leader_append_entry(log)
+      this.state.config_idx = log.idx
+      this.state.peer_addresses_old = old_peers
+      this.state.peer_addresses = peers
+      this.reconcile_peers_with_state()
       return { idx: log.idx, term: log.term }
     }
 
@@ -512,32 +508,26 @@ export class Server {
       if (msg.prev_idx !== idx) {
         this.db.delete_invalid_logs_from_storage(msg.prev_idx)
       }
+
+      let conf_log: Log  = new Log()
       msg.logs.forEach((log) => {
         this.db.add_log_to_storage(log)
         if (log.type === LogType.config) {
-          this.configs_in_transition = true
+          conf_log = log
         }
       })
+      if (conf_log.type === LogType.config && conf_log.data) {
+        const config = JSON.parse(conf_log.data.toString())
+        this.state.config_idx = conf_log.idx
+        this.state.peer_addresses = config.new_peers
+        this.state.peer_addresses_old = config.old_peers
+        this.reconcile_peers_with_state()
+      }
       const previous_commit_idx = this.state.commit_idx
       this.state.commit_idx = bigint_min(msg.commit_idx, this.db.last_log_idx())
-      if (previous_commit_idx !== this.state.commit_idx) {
-          if (this.configs_in_transition) {
-            let config_log = this.db.latest_config_before_or_at(this.state.commit_idx)
-            if (config_log && config_log.data && config_log.idx > this.state.config_idx ) {
-              const config = JSON.parse(config_log.data.toString())
-              this.state.config_idx = config_log.idx
-              this.state.peer_addresses = config.new_peers
-              this.state.peer_addresses_old = config.old_peers
-              this.reconcile_peers_with_state()
-            } else {
-              config_log = this.db.latest_config_before_or_at(this.db.last_log_idx())
-              if (config_log === null || this.state.config_idx === config_log.idx) {
-                this.configs_in_transition = false
-              }
-            }
-          }
+      if (previous_commit_idx !== this.state.commit_idx || conf_log !== null) {
           this.save_state()
-        }
+      }
       this.reset_vote_timeout()
       message = new AppendResponse(msg.id, this.my_addr, msg.from, this.state.current_term, true)
       this.send(peer, message)
@@ -595,26 +585,14 @@ export class Server {
         }
         */
         this.state.commit_idx = new_idx
-        if (this.configs_in_transition) {
-        const config_log = this.db.latest_config_before_or_at(this.state.commit_idx)
-        if (config_log && config_log.data && config_log.idx > this.state.config_idx) {
-          const config = JSON.parse(config_log.data.toString())
-          this.state.config_idx = config_log.idx
-          this.state.peer_addresses = config.new_peers
-          this.state.peer_addresses_old = config.old_peers
-          this.reconcile_peers_with_state()
-        }
-        // if there are no more config changes in queue, and there are old peers in the state
-        // then we append a new config without the old addresses, thereinby reaching the final desired state
-        if (this.state.peer_addresses_old.length !== 0 &&
-            this.db.latest_config_before_or_at(this.db.last_log_idx()) === null) {
+        if (this.state.peer_addresses_old.length !== 0 && this.state.config_idx <= this.state.commit_idx) {
           const log = new Log()
           log.data = Buffer.from(JSON.stringify({old_peers: [], new_peers: this.state.peer_addresses}))
           log.type = LogType.config
           this.leader_append_entry(log)
-        } else {
-          this.configs_in_transition = false
-        }
+          this.state.peer_addresses_old = []
+          this.reconcile_peers_with_state()
+          this.state.config_idx = log.idx
         }
         this.save_state()
         return true
