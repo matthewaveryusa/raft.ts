@@ -114,6 +114,7 @@ export class Server {
               this.state.peer_addresses = config.new_peers
               this.state.peer_addresses_old = config.old_peers
               this.state.config_idx = last_log.idx
+              this.save_state()
             }
           }
       } else {
