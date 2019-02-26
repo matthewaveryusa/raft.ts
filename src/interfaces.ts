@@ -25,4 +25,5 @@ export type message_cb = (message: Message) => void
 export abstract class AbstractMessagingEngine {
     public abstract start(address: string, on_message_cb: message_cb): void
     public abstract send(peer_addr: string, message: Message): void
+    public abstract stop(): void
 }

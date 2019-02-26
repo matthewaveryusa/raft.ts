@@ -30,7 +30,7 @@ class Peer {
     public accepting_optimistic_appends: boolean
     public is_in_old_config: boolean
     public is_in_new_config: boolean
-    public got_some_message: boolean
+    public is_responding_favorably: boolean
 
     constructor(addr: string, is_in_old_config: boolean, is_in_new_config: boolean) {
         this.addr = addr
@@ -42,7 +42,7 @@ class Peer {
         this.accepting_optimistic_appends = true
         this.is_in_old_config = is_in_old_config
         this.is_in_new_config = is_in_new_config
-        this.got_some_message = false
+        this.is_responding_favorably = false
     }
 
 }
@@ -102,6 +102,20 @@ export class Server {
       const state = this.get_state()
       if (state) {
           this.state = state
+          const idx = this.db.last_log_idx()
+          if (idx !== BigInt(0)) {
+            const last_log = this.db.get_logs_after(idx - BigInt(1))[0]
+            if (last_log.type === LogType.config && last_log.data !== null) {
+              // state is written after config is written to log.
+              // if crash occurs between the writes, state has an invalid peer set
+              // so if the last log is a config, we populate the state with
+              // the peers in the last log
+              const config = JSON.parse(last_log.data.toString())
+              this.state.peer_addresses = config.new_peers
+              this.state.peer_addresses_old = config.old_peers
+              this.state.config_idx = last_log.idx
+            }
+          }
       } else {
         this.state = new State()
         peers_bootstrap.forEach((peer_addr) => this.state.peer_addresses.push(peer_addr.toString()))
@@ -163,6 +177,7 @@ export class Server {
       this.state.peer_addresses_old = old_peers
       this.state.peer_addresses = peers
       this.reconcile_peers_with_state()
+      this.save_state()
       return { idx: log.idx, term: log.term }
     }
 
@@ -378,13 +393,26 @@ export class Server {
         peer.next_idx = this.db.last_log_idx() + BigInt(1)
         this.reset_inflight_messages(peer)
         peer.accepting_optimistic_appends = true
-        peer.got_some_message = false
+        peer.is_responding_favorably = false
       }
     }
 
     public candidate_start_prevote(): void {
       this.timeout_engine.clear('vote')
-      this.is_prevoting = true
+
+      if (this.state.peer_addresses_old.length === 0 && this.state.peer_addresses.indexOf(this.my_addr) === -1) {
+        // no longer in config! clear timeouts which will exit the program
+        if (this.role === Role.leader) {
+          this.step_down(this.state.current_term)
+          this.timeout_engine.clear('vote')
+          this.messaging_engine.stop()
+          return
+        } else {
+          this.reset_volatile_peer_state()
+          this.messaging_engine.stop()
+          return
+        }
+      }
       if (this.role === Role.leader) {
         // make sure we got some sort of message from the majority of the cluster
         // within the vote timeout
@@ -393,8 +421,8 @@ export class Server {
         // and try to win a vote
         let num_messages = 0
         for (const [peer_addr, peer] of this.peers) {
-          if (peer.got_some_message === true) {
-            peer.got_some_message = false
+          if (peer.is_responding_favorably === true) {
+            peer.is_responding_favorably = false
             num_messages++
           }
         }
@@ -406,6 +434,7 @@ export class Server {
         }
       }
 
+      this.is_prevoting = true
       const idx = this.db.last_log_idx()
       const term = this.db.log_term(idx)
 
@@ -650,7 +679,6 @@ export class Server {
 
     public on_append_response(request: AppendRequest, msg: AppendResponse, peer: Peer): void {
       // const peer_state = this.peers[msg.from]
-      peer.got_some_message = true
       if (msg.success === false) {
         // step back one
         if (peer.next_idx <= BigInt(0)) {
@@ -677,6 +705,7 @@ export class Server {
         this.send_append_entry(peer, message)
       } else {
         // we've made progress
+        peer.is_responding_favorably = true
         peer.match_idx = request.last_idx
         this.update_commit_idx()
 

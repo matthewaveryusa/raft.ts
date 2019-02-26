@@ -20,4 +20,8 @@ export class TestMessagingEngine extends AbstractMessagingEngine {
     this.events.add('TestMessagingEngine::send', {peer_addr, message}, null)
   }
 
+ public stop(): void {
+   // pass
+ }
+
 }

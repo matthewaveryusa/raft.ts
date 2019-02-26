@@ -90,6 +90,11 @@ export class HttpMessagingEngine extends AbstractMessagingEngine {
       this.http_server.listen(parseInt(port, 10), ip)
     }
 
+    public stop() {
+      this.http_server.close()
+      this.http_client_agent.destroy()
+    }
+
     public send(peer_addr: string, message: Message): void {
       const wire_message = encode(message)
       if (!wire_message) {
