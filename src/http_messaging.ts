@@ -23,7 +23,7 @@ function encode(message: Message): BufferList|undefined {
         case(MessageType.vote_request):
         const vr = message as VoteRequest
         return msgpack.encode([vr.id.toString(), vr.from, vr.to, vr.type, vr.term.toString(),
-          vr.last_idx.toString(), vr.last_term.toString()])
+          vr.last_idx.toString(), vr.last_term.toString(), vr.is_test])
         case(MessageType.vote_response):
         const vs = message as VoteResponse
         return msgpack.encode([vs.id.toString(), vs.from, vs.to, vs.type, vs.term.toString(),
@@ -56,7 +56,7 @@ function decode(data: Buffer): Message|undefined {
           arr[5])
         case(MessageType.vote_request):
         return new VoteRequest(id, from, to, term,
-          BigInt(arr[5]), BigInt(arr[6]))
+          BigInt(arr[5]), BigInt(arr[6]), arr[7])
         case(MessageType.vote_response):
         return new VoteResponse(id, from, to, term,
            arr[5])

@@ -160,7 +160,7 @@ function accept_vote_request() {
     s.start_server()
 
     // s2 sends a request with a higher term number
-    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(43), BigInt(0), BigInt(0))
+    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(43), BigInt(0), BigInt(0), false)
     s.on_message(vote_request_s2)
     vote_request_s2.id++
     s.on_message(vote_request_s2)
@@ -189,7 +189,7 @@ function deny_vote_request() {
     s.start_server()
 
     // s2 sends a request with a higher term number
-    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(41), BigInt(0), BigInt(0))
+    const vote_request_s2 = new VoteRequest(BigInt(42000000), 's2', 's1', BigInt(41), BigInt(0), BigInt(0), false)
     s.on_message(vote_request_s2)
 
     ev.logs.forEach((log) => {
@@ -461,13 +461,13 @@ function various_invalid_messages() {
     s.start_server()
     // not a leader, no-op
     s.leader_append_entry(new Log())
-    let msg: Message = new VoteRequest(BigInt(1), 'bad', 's1', BigInt(0), BigInt(0), BigInt(0))
+    let msg: Message = new VoteRequest(BigInt(1), 'bad', 's1', BigInt(0), BigInt(0), BigInt(0), false)
     s.on_message(msg)
     msg.to = 'bad'
     msg.from = 's2'
     s.on_message(msg)
 
-    msg = new VoteRequest(BigInt(1000), 's2', 's1', BigInt(0), BigInt(0), BigInt(0))
+    msg = new VoteRequest(BigInt(1000), 's2', 's1', BigInt(0), BigInt(0), BigInt(0), false)
     s.on_message(msg)
     s.on_message(msg)
     msg.id = BigInt(900)

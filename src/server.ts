@@ -30,6 +30,7 @@ class Peer {
     public accepting_optimistic_appends: boolean
     public is_in_old_config: boolean
     public is_in_new_config: boolean
+    public got_some_message: boolean
 
     constructor(addr: string, is_in_old_config: boolean, is_in_new_config: boolean) {
         this.addr = addr
@@ -41,6 +42,7 @@ class Peer {
         this.accepting_optimistic_appends = true
         this.is_in_old_config = is_in_old_config
         this.is_in_new_config = is_in_new_config
+        this.got_some_message = false
     }
 
 }
@@ -61,6 +63,7 @@ export class Server {
     private peers: Map<string, Peer>
     private next_message_id: bigint
     private state: State
+    private is_prevoting: boolean
 
     constructor(address: string,
                 peers_bootstrap: string[],
@@ -74,6 +77,7 @@ export class Server {
       this.messaging_engine = messaging_engine
       this.db = db
       this.id_slab_size = id_slab_size || BigInt(1000000)
+      this.is_prevoting = false
 
       this.timeout_ms = 5000
       this.leader_heartbeat_ms = this.timeout_ms / 2
@@ -110,7 +114,7 @@ export class Server {
     // make this server think it's the leader
     // convenient for testing
     public promote_to_leader(send_noop: boolean = false): void {
-      this.timeout_engine.clear('vote')
+      this.reset_vote_timeout()
       this.role = Role.leader
       this.current_leader = this.my_addr
       this.reset_volatile_peer_state()
@@ -331,10 +335,11 @@ export class Server {
     }
 
     public reset_vote_timeout() {
-      this.timeout_engine.set_varied('vote', this.timeout_ms, () => this.candidate_start_vote())
+      this.timeout_engine.set_varied('vote', this.timeout_ms, () => this.candidate_start_prevote())
     }
 
     public step_down(term: bigint): void {
+      this.is_prevoting = false
       this.state.current_term = term
       this.state.voted_for = null
       this.save_state()
@@ -367,14 +372,56 @@ export class Server {
       for (const [peer_addr, peer] of this.peers) {
         this.timeout_engine.clear(`heartbeat_${peer_addr}`)
 
-        // only address and port are not volatile
+        // only address, port, and max msg id are not volatile
         peer.vote_granted = false
         peer.match_idx = BigInt(0)
         peer.next_idx = this.db.last_log_idx() + BigInt(1)
         this.reset_inflight_messages(peer)
         peer.accepting_optimistic_appends = true
-        peer.max_message_id = BigInt(0)
+        peer.got_some_message = false
       }
+    }
+
+    public candidate_start_prevote(): void {
+      this.timeout_engine.clear('vote')
+      this.is_prevoting = true
+      if (this.role === Role.leader) {
+        // make sure we got some sort of message from the majority of the cluster
+        // within the vote timeout
+        // if we did, we continue to be the
+        // if we didn't, then we want to avoid perpetuating a split-brain, so we step down
+        // and try to win a vote
+        let num_messages = 0
+        for (const [peer_addr, peer] of this.peers) {
+          if (peer.got_some_message === true) {
+            peer.got_some_message = false
+            num_messages++
+          }
+        }
+        if (num_messages >= Math.ceil((this.peers.size + 1) / 2)) {
+          this.reset_vote_timeout()
+          return
+        } else {
+          this.step_down(this.state.current_term)
+        }
+      }
+
+      const idx = this.db.last_log_idx()
+      const term = this.db.log_term(idx)
+
+      for (const [peer_addr, peer] of this.peers) {
+        peer.vote_granted = false
+        this.reset_inflight_messages(peer)
+        const message_id = this.unique_message_id()
+        const message = new VoteRequest(message_id, this.my_addr, peer_addr,
+          this.state.current_term + BigInt(1), idx, term, true)
+        this.send(peer, message)
+        this.timeout_engine.set(message_id.toString(), this.message_timeout_ms, () => {
+          peer.inflight_messages.delete(message_id)
+        })
+        peer.inflight_messages.set(message_id, message)
+      }
+      this.reset_vote_timeout()
     }
 
     public candidate_start_vote(): void {
@@ -394,9 +441,10 @@ export class Server {
 
       for (const [peer_addr, peer] of this.peers) {
         this.reset_inflight_messages(peer)
+        peer.vote_granted = false
         const message_id = this.unique_message_id()
         const message = new VoteRequest(message_id, this.my_addr, peer_addr,
-          this.state.current_term, idx, term)
+          this.state.current_term, idx, term, false)
         this.send(peer, message)
         this.timeout_engine.set(message_id.toString(), this.message_timeout_ms, () => {
           peer.inflight_messages.delete(message_id)
@@ -602,6 +650,7 @@ export class Server {
 
     public on_append_response(request: AppendRequest, msg: AppendResponse, peer: Peer): void {
       // const peer_state = this.peers[msg.from]
+      peer.got_some_message = true
       if (msg.success === false) {
         // step back one
         if (peer.next_idx <= BigInt(0)) {
@@ -669,26 +718,36 @@ export class Server {
         peer.vote_granted = true
       }
       if (this.has_vote_majority()) {
-        this.promote_to_leader(true)
+        if (this.is_prevoting === true) {
+          this.is_prevoting = false
+          this.candidate_start_vote()
+        } else {
+          this.promote_to_leader(true)
+        }
       }
     }
 
     public on_vote_request(msg: VoteRequest, peer: Peer): void {
-      if (this.state.current_term < msg.term) {
+      if (msg.is_test === false && this.state.current_term < msg.term) {
         this.step_down(msg.term)
       }
       let vote_granted = false
       const idx = this.db.last_log_idx()
       const term = this.db.log_term(idx)
+      // the most logic-intense section of the code
       const msg_log_not_behind = (msg.last_term > term) || (msg.last_term === term && msg.last_idx >= idx)
-      if (this.state.current_term === msg.term &&
-        (this.state.voted_for === null || this.state.voted_for === msg.from) &&
-        msg_log_not_behind
-      ) {
-        vote_granted = true
-        this.state.voted_for = msg.from
-        this.save_state()
-        this.reset_vote_timeout()
+
+      if (msg_log_not_behind) {
+        if (msg.is_test) {
+          vote_granted = this.state.current_term < msg.term
+        } else {
+          vote_granted = (this.state.current_term === msg.term && (this.state.voted_for === null || this.state.voted_for === msg.from))
+        }
+      }
+      if ( vote_granted && msg.is_test === false) {
+          this.state.voted_for = msg.from
+          this.save_state()
+          this.reset_vote_timeout()
       }
       const message = new VoteResponse(msg.id, this.my_addr, msg.from, this.state.current_term, vote_granted)
       this.messaging_engine.send(peer.addr, message)

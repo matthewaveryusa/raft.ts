@@ -41,7 +41,7 @@
   export class VoteRequest extends Message {
 
     constructor(id: bigint, from: string, to: string, term: bigint,
-                public last_idx: bigint, public last_term: bigint) {
+                public last_idx: bigint, public last_term: bigint, public is_test: boolean) {
         super(MessageType.vote_request, id, from, to, term)
     }
 
