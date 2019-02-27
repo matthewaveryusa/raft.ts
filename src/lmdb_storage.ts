@@ -58,11 +58,7 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
         for (let found = cursor.goToRange(idx.toString().padStart(20, '0'));
           found !== null; found = cursor.goToNext()) {
           const data = msgpack.decode(cursor.getCurrentBinaryUnsafe())
-          const log = new Log()
-          log.term = BigInt(data[0])
-          log.idx = BigInt(found)
-          log.data = data[1]
-          log.type = data[2]
+          const log = new Log(data[2], BigInt(found), BigInt(data[0]), data[1])
           logs.push(log)
         }
         txn.commit()
@@ -117,8 +113,4 @@ export class LmdbStorageEngine extends AbstractStorageEngine {
       txn.commit()
       this.cached_log_idx = null
     }
-
-    public latest_config_before_or_at(idx: bigint): Log | null {
-      return null
-  }
   }

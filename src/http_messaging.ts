@@ -41,14 +41,7 @@ function decode(data: Buffer): Message|undefined {
 
     switch (type) {
         case(MessageType.append_request):
-        const logs = arr[9].map((val: any[]): Log => {
-          const l = new Log()
-          l.idx = BigInt(val[0])
-          l.term = BigInt(val[1])
-          l.type = val[2]
-          l.data = val[3]
-          return l
-        })
+        const logs = arr[9].map((val: any[]): Log => new Log(val[2], BigInt(val[0]), BigInt(val[1]), val[3]))
         return new AppendRequest(id, from, to, term,
           BigInt(arr[5]), BigInt(arr[6]), BigInt(arr[7]), BigInt(arr[8]), logs)
         case(MessageType.append_response):

@@ -137,10 +137,7 @@ export class Server {
         this.reset_heartbeat(p)
       }
       if (send_noop) {
-        const log = new Log()
-        log.type = LogType.noop
-        log.data =  null
-        this.leader_append_entry(log)
+        this.leader_append_entry(Log.make_noop())
       }
     }
 
@@ -153,7 +150,7 @@ export class Server {
         if (this.role !== Role.leader) {
           return { error: 'not_leader', leader: this.current_leader }
         }
-        const log = new Log()
+        const log = Log.make_empty()
         log.data = data
         log.type = LogType.message
         this.leader_append_entry(log)
@@ -170,14 +167,17 @@ export class Server {
       } else {
         old_peers = this.state.peer_addresses
       }
-      const log = new Log()
+
+      this.state.peer_addresses_old = old_peers
+      this.state.peer_addresses = peers
+
+      this.reconcile_peers_with_state()
+
+      const log = Log.make_empty()
       log.data = Buffer.from(JSON.stringify({old_peers, new_peers: peers}))
       log.type = LogType.config
       this.leader_append_entry(log)
       this.state.config_idx = log.idx
-      this.state.peer_addresses_old = old_peers
-      this.state.peer_addresses = peers
-      this.reconcile_peers_with_state()
       this.save_state()
       return { idx: log.idx, term: log.term }
     }
@@ -587,7 +587,7 @@ export class Server {
         this.db.delete_invalid_logs_from_storage(msg.prev_idx)
       }
 
-      let conf_log: Log  = new Log()
+      let conf_log: Log  = Log.make_empty()
       msg.logs.forEach((log) => {
         this.db.add_log_to_storage(log)
         if (log.type === LogType.config) {
@@ -664,7 +664,7 @@ export class Server {
         */
         this.state.commit_idx = new_idx
         if (this.state.peer_addresses_old.length !== 0 && this.state.config_idx <= this.state.commit_idx) {
-          const log = new Log()
+          const log = Log.make_empty()
           log.data = Buffer.from(JSON.stringify({old_peers: [], new_peers: this.state.peer_addresses}))
           log.type = LogType.config
           this.leader_append_entry(log)

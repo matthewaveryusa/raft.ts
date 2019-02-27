@@ -7,16 +7,27 @@
   }
 
   export class Log {
-      public type: LogType
-      public idx: bigint
-      public term: bigint
-      public data: Buffer | null
-      constructor() {
-          this.type =  LogType.noop
-          this.idx = BigInt(0)
-          this.term = BigInt(0)
-          this.data = null
+        public static make_empty(): Log {
+          return new Log(
+           LogType.noop,
+           BigInt(0),
+           BigInt(0),
+           null)
       }
+
+      public static make_noop(): Log {
+        return new Log(
+         LogType.noop,
+         BigInt(0),
+         BigInt(0),
+         null)
+    }
+
+      constructor(
+        public type: LogType,
+        public idx: bigint,
+        public term: bigint,
+        public data: Buffer | null) {}
   }
 
   export enum MessageType {

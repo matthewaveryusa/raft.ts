@@ -3,3 +3,6 @@ coverage/**
 node_modules/**
 .vscode/**
 .nyc_output/**
+test.lmdb
+test.lmdb/**
+test.sqlite3

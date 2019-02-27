@@ -59,29 +59,13 @@ describe('empty', () => {
 })
 describe('not empty', () => {
   it('add logs', () => {
-  let log = new Log()
-  log.data = Buffer.from('test1')
-  log.idx = BigInt(1)
-  log.term = BigInt(1)
-  log.type = LogType.message
+  let log = new Log(LogType.message, BigInt(1), BigInt(1), Buffer.from('test1'))
   engine.add_log_to_storage(log)
-  log = new Log()
-  log.data = Buffer.from('test2')
-  log.idx = BigInt(2)
-  log.term = BigInt(1)
-  log.type = LogType.message
+  log = new Log(LogType.message, BigInt(2), BigInt(1), Buffer.from('test2'))
   engine.add_log_to_storage(log)
-  log = new Log()
-  log.data = Buffer.from('test3')
-  log.idx = BigInt(3)
-  log.term = BigInt(2)
-  log.type = LogType.message
+  log = new Log(LogType.message, BigInt(3), BigInt(2), Buffer.from('test3'))
   engine.add_log_to_storage(log)
-  log = new Log()
-  log.data = Buffer.from('test4')
-  log.idx = BigInt(4)
-  log.term = BigInt(2)
-  log.type = LogType.message
+  log = new Log(LogType.message, BigInt(4), BigInt(2), Buffer.from('test4'))
   engine.add_log_to_storage(log)
   })
 

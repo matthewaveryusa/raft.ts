@@ -1,3 +1,4 @@
+import {expect} from 'chai'
 import { TestMessagingEngine } from './test_messaging'
 import { TestStorageEngine } from './test_storage'
 import { TestTimeoutEngine } from './test_timeouts'
@@ -24,8 +25,7 @@ function build_from_scratch() {
     })
 }
 
-function build_from_state() {
-    console.log('build from state')
+function setup_with_state(commit_idx?: number): [EventLog, TestMessagingEngine, TestStorageEngine, TestTimeoutEngine, Server] {
     const ev = new EventLog()
     const me = new TestMessagingEngine(ev)
     const se = new TestStorageEngine(ev)
@@ -33,13 +33,19 @@ function build_from_state() {
 
     se.kv.set('message_id_chunk', BigInt(42000000).toString())
     const state = new State()
-    state.commit_idx = BigInt(5000)
+    state.commit_idx = BigInt(typeof commit_idx === 'number' ? commit_idx : 5000)
     state.current_term = BigInt(42)
     state.peer_addresses = ['s1', 's2', 's3', 's4']
     state.voted_for = 's2'
     se.kv.set('state', state.toString())
 
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    return [ev, me, se, te, s]
+}
+
+function build_from_state() {
+    console.log('build from state')
+    const [ev, me, se, te, s] = setup_with_state()
     s.start_server()
 
     // no-op to evaluate the else branch
@@ -57,20 +63,7 @@ function make_invalid_state() {
 
 function become_candidate() {
     console.log('become candidate')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    const [ev, me, se, te, s] = setup_with_state()
     s.start_server()
     ev.logs[3].args.callback()
     ev.logs.forEach((log) => {
@@ -81,30 +74,27 @@ function become_candidate() {
 
 function candidate_become_leader() {
     console.log('become leader')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state()
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
     ev.logs[3].args.callback()
-    const vote_response_s2 = new VoteResponse(BigInt(42000002), 's2', 's1', BigInt(43), true)
+    //  this is pre-vote
+    const prevote_response_s2 = new VoteResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
+    s.on_message(prevote_response_s2)
+    const prevote_response_s4 = new VoteResponse(BigInt(42000004), 's4', 's1', BigInt(42), false)
+    s.on_message(prevote_response_s4)
+    const prevote_response_s3 = new VoteResponse(BigInt(42000003), 's3', 's1', BigInt(42), true)
+    s.on_message(prevote_response_s3)
+
+    // pre-vote ok, this is real vote
+    const vote_response_s2 = new VoteResponse(BigInt(42000005), 's2', 's1', BigInt(43), true)
     s.on_message(vote_response_s2)
-    const vote_response_s4 = new VoteResponse(BigInt(42000004), 's4', 's1', BigInt(43), false)
+    const vote_response_s4 = new VoteResponse(BigInt(42000007), 's4', 's1', BigInt(43), false)
     s.on_message(vote_response_s4)
-    const vote_response_s3 = new VoteResponse(BigInt(42000003), 's3', 's1', BigInt(43), true)
+    const vote_response_s3 = new VoteResponse(BigInt(42000006), 's3', 's1', BigInt(43), true)
     s.on_message(vote_response_s3)
 
-    // I'm a leader, can't start a vode. no-op
+    // I'm a leader, can't start a vote. no-op
     s.candidate_start_vote()
 
     ev.logs.forEach((log) => {
@@ -114,27 +104,12 @@ function candidate_become_leader() {
 
 function candidate_step_down() {
     console.log('candidate step down')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state()
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
     ev.logs[3].args.callback()
     const vote_response_s2 = new VoteResponse(BigInt(42000002), 's2', 's1', BigInt(420), false)
     s.on_message(vote_response_s2)
-
-    // I'm a leader, can't start a vode. no-op
-    s.candidate_start_vote()
 
     ev.logs.forEach((log) => {
         console.log(log)
@@ -143,20 +118,8 @@ function candidate_step_down() {
 
 function accept_vote_request() {
     console.log('accept vote request')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state()
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
 
     // s2 sends a request with a higher term number
@@ -172,20 +135,8 @@ function accept_vote_request() {
 
 function deny_vote_request() {
     console.log('deny vote request')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state()
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
 
     // s2 sends a request with a higher term number
@@ -199,20 +150,8 @@ function deny_vote_request() {
 
 function client_request() {
     console.log('client request')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state()
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
     const ret_err = s.on_client_request(Buffer.from('test data'))
     s.promote_to_leader()
@@ -226,20 +165,8 @@ function client_request() {
 
 function append_request() {
     console.log('append request')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, s] = setup_with_state(0)
 
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(0)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
 
     // s2 sends a request with a higher term number (heartbeat)
@@ -248,11 +175,7 @@ function append_request() {
     s.on_message(append_request_s2)
 
     // s2 sends a request with a same term number (and data)
-    const log = new Log()
-    log.data = null
-    log.idx = BigInt(1)
-    log.term = BigInt(43)
-    log.type = LogType.noop
+    const log = new Log(LogType.noop, BigInt(1), BigInt(43), null)
     const append_request2_s2 = new AppendRequest(BigInt(42000001), 's2', 's1', BigInt(43),
      BigInt(0), BigInt(0), BigInt(0), BigInt(1), [log])
     s.on_message(append_request2_s2)
@@ -269,20 +192,7 @@ function append_request() {
 
 function append_response() {
     console.log('append response')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    const [ev, me, se, te, s] = setup_with_state()
     s.start_server()
     s.promote_to_leader()
 
@@ -305,21 +215,7 @@ function append_response() {
 
 function trigger_heartbeat() {
     console.log('trigger heartbeat')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(5000)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
-    s.start_server()
+    const [ev, me, se, te, s] = setup_with_state()
     s.promote_to_leader()
 
     ev.logs[9].args.callback()
@@ -331,20 +227,7 @@ function trigger_heartbeat() {
 
 function append_to_trailing_peer() {
     console.log('append to trailing peer')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(0)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    const [ev, me, se, te, s] = setup_with_state(0)
     s.start_server()
     s.promote_to_leader()
 
@@ -366,51 +249,20 @@ function append_to_trailing_peer() {
 
 function find_common_log() {
     console.log('find common log')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
+    const [ev, me, se, te, z] = setup_with_state(1)
 
-    const l1 = new Log()
-    l1.data = Buffer.from('1')
-    l1.idx = BigInt(1)
-    l1.term = BigInt(40)
-    l1.type = LogType.message
+    const l1 = new Log(LogType.message, BigInt(1), BigInt(40), Buffer.from('1'))
     se.add_log_to_storage(l1)
-    const l2 = new Log()
-    l2.data = Buffer.from('2')
-    l2.idx = BigInt(2)
-    l2.term = BigInt(41)
-    l2.type = LogType.message
+    const l2 = new Log(LogType.message, BigInt(2), BigInt(41), Buffer.from('2'))
     se.add_log_to_storage(l2)
-    const l3 = new Log()
-    l3.data = Buffer.from('3')
-    l3.idx = BigInt(3)
-    l3.term = BigInt(42)
-    l3.type = LogType.message
+    const l3 = new Log(LogType.message, BigInt(3), BigInt(42), Buffer.from('3'))
     se.add_log_to_storage(l3)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(1)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
 
     const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
     s.start_server()
 
-    const l33 = new Log()
-    l33.data = Buffer.from('33')
-    l33.idx = BigInt(3)
-    l33.term = BigInt(43)
-    l33.type = LogType.message
-    const l4 = new Log()
-    l4.data = Buffer.from('44')
-    l4.idx = BigInt(4)
-    l4.term = BigInt(43)
-    l4.type = LogType.message
+    const l33 = new Log(LogType.message, BigInt(3), BigInt(43), Buffer.from('33'))
+    const l4 = new Log(LogType.message, BigInt(4), BigInt(43), Buffer.from('44'))
 
     // bad term
     const append_request_s2_fail1 = new AppendRequest(BigInt(42000000), 's2', 's1', BigInt(12),
@@ -444,23 +296,10 @@ function find_common_log() {
 
 function various_invalid_messages() {
     console.log('various invalid messages')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(0)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me)
+    const [ev, me, se, te, s] = setup_with_state(0)
     s.start_server()
     // not a leader, no-op
-    s.leader_append_entry(new Log())
+    s.leader_append_entry(Log.make_empty())
     let msg: Message = new VoteRequest(BigInt(1), 'bad', 's1', BigInt(0), BigInt(0), BigInt(0), false)
     s.on_message(msg)
     msg.to = 'bad'
@@ -485,20 +324,7 @@ function various_invalid_messages() {
 
 function unique_id_pooling() {
     console.log('unique id pooling')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(0)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me, BigInt(2))
+    const [ev, me, se, te, s] = setup_with_state(0)
     s.start_server()
     s.promote_to_leader()
     s.on_client_request(Buffer.from('test data'))
@@ -510,20 +336,7 @@ function unique_id_pooling() {
 
 function timeout_messages() {
     console.log('timeout messages')
-    const ev = new EventLog()
-    const me = new TestMessagingEngine(ev)
-    const se = new TestStorageEngine(ev)
-    const te = new TestTimeoutEngine(ev)
-
-    se.kv.set('message_id_chunk', BigInt(42000000).toString())
-    const state = new State()
-    state.commit_idx = BigInt(0)
-    state.current_term = BigInt(42)
-    state.peer_addresses = ['s1', 's2', 's3', 's4']
-    state.voted_for = 's2'
-    se.kv.set('state', state.toString())
-
-    const s = new Server('s1', ['s1', 's2', 's3'], se, te, me, BigInt(2))
+    const [ev, me, se, te, s] = setup_with_state(0)
     s.start_server()
     ev.logs[3].args.callback()
     for ( const [name, cb] of te.timeouts) {
@@ -535,6 +348,24 @@ function timeout_messages() {
     for ( const [name, cb] of te.timeouts) {
         cb()
     }
+}
+
+function change_config() {
+    console.log('change config')
+    const [ev, me, se, te, s] = setup_with_state(0)
+
+    s.start_server()
+    s.promote_to_leader()
+    s.on_config_change_request(['s1', 's2', 's3', 's5']) // booting s4, adding s5
+
+    const append_response_s2 = new AppendResponse(BigInt(42000002), 's2', 's1', BigInt(42), true)
+    s.on_message(append_response_s2)
+    const append_response_s3 = new AppendResponse(BigInt(42000003), 's3', 's1', BigInt(42), true)
+    s.on_message(append_response_s3)
+
+    ev.logs.forEach((log) => {
+        console.log(log)
+    })
 }
 
 build_from_scratch()
@@ -570,3 +401,5 @@ various_invalid_messages()
 unique_id_pooling()
 
 timeout_messages()
+
+change_config()
