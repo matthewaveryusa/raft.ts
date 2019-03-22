@@ -1,5 +1,13 @@
+This is a fully featured raft implementation, implementing the more subtle parts of the raft consensus algorithm. Notably a two-phase vote to avoid bad nodes DoSing the cluster, optimistic message delivery on up-to-date nodes and dynamic cluster changes. 
+
 TODO:
 =====
 * snapshotting
-* dynamic cluster change
-* pre-vote
+
+Features:
+=========
+* dynamic cluster sharing
+* prevoting
+
+backends:
+=========
