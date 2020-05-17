@@ -1,17 +1,21 @@
 {
-    "defaultSeverity": "error",
-    "extends": [
-        "tslint:recommended"
-    ],
-    "jsRules": {},
-    "rules": {
-        "quotemark": [true, "single"],
-        "semicolon": [true, "never"],
-        "variable-name": [true, "allow-snake-case"],
-        "no-console": [false],
-        "max-classes-per-file": [false, 1],
-        "no-empty": [true, "allow-empty-catch"],
-        "max-line-length": [true, 640]
-    },
-    "rulesDirectory": []
+  "extends": "gts/tslint.json",
+  "rules": {
+  "radix": true,
+  "variable-name": {
+  "options": [
+    "ban-keywords",
+    "check-format",
+    "allow-leading-underscore",
+    "allow-pascal-case",
+    "allow-snake-case"
+    ]
+  }
+  },
+  "linterOptions": {
+    "exclude": [
+      "**/*.json"
+    ]
+
+  }
 }
