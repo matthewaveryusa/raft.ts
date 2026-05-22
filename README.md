@@ -33,7 +33,11 @@ cluster lives at `test/cluster.ts`.
   re-onboarded — the leader will keep walking `next_idx` toward 1 instead
   of shipping a snapshot. This is the largest single gap before this
   library is appropriate for long-running production workloads. See
-  `docs/snapshots.md` for design notes.
+  [`docs/snapshots.md`](docs/snapshots.md) for design notes.
+- **History**: an AI-driven cleanup pass found and fixed a number of bugs
+  in the original implementation. See
+  [`docs/ai-bug-analysis.md`](docs/ai-bug-analysis.md) for the categorized
+  postmortem.
 
 ## Layout
 
