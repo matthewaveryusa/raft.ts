@@ -1,12 +1,17 @@
 import * as mqtt from 'mqtt';
 import { AbstractMessagingEngine, AbstractSerde } from './interfaces';
+import { Logger } from './logger';
 import { Message } from './messages';
 
 export class MqttMessagingEngine extends AbstractMessagingEngine {
   private mqtt_client: mqtt.Client | undefined;
 
-  constructor(serde: AbstractSerde, private broker_address: string) {
-    super(serde);
+  constructor(
+    serde: AbstractSerde,
+    private broker_address: string,
+    logger?: Logger
+  ) {
+    super(serde, logger);
     this.mqtt_client = undefined;
   }
 
@@ -39,6 +44,8 @@ export class MqttMessagingEngine extends AbstractMessagingEngine {
     if (!this.mqtt_client) {
       return;
     }
-    this.mqtt_client.publish(peer_addr, wire_message.toString());
+    // Pass the raw bytes (not a UTF-8 string) so msgpack binary survives the
+    // wire. wire_message is a BufferList; .slice(0) flattens it to a Buffer.
+    this.mqtt_client.publish(peer_addr, wire_message.slice(0));
   }
 }

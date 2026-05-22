@@ -3,6 +3,8 @@ import {
   AbstractStorageEngine,
   AbstractTimeoutEngine,
 } from './interfaces';
+import { bigint_cmp, bigint_min } from './bigint_util';
+import { Logger, NOOP_LOGGER } from './logger';
 import {
   AppendRequest,
   AppendResponse,
@@ -15,7 +17,6 @@ import {
 } from './messages';
 import { Role, State } from './state';
 import { EventEmitter } from 'events';
-import { threadId } from 'worker_threads';
 
 // raft engine
 export interface LogIdxTerm {
@@ -28,59 +29,108 @@ export interface ClientError {
   leader: string | null;
 }
 
-function bigint_min(lhs: bigint, rhs: bigint): bigint {
-  if (lhs < rhs) {
-    return lhs;
-  }
-  return rhs;
+export interface ServerOptions {
+  // Reserve this many message IDs at a time on disk so a crash never reuses
+  // an ID. Defaults to 1,000,000 — large enough that the disk write cost
+  // amortizes to ~1 hit per million sends.
+  id_slab_size?: bigint;
+  // Maximum number of inflight (unacked) messages we'll keep in memory per
+  // peer before refusing to enqueue more. A slow peer can otherwise
+  // accumulate one entry per client request unbounded.
+  max_inflight_per_peer?: number;
+  // Optional logger; defaults to a no-op so unconfigured servers stay quiet.
+  logger?: Logger;
 }
 
-class Peer {
+// Public, read-only snapshot of a peer's replication state. Used by the
+// `metrics()` accessor so external code does not need to reach into the
+// internal `Peer` object.
+export interface PeerMetrics {
   addr: string;
-  vote_granted: boolean;
   match_idx: bigint;
   next_idx: bigint;
-  inflight_messages: Map<bigint, Message>;
-  max_message_id: bigint;
-  accepting_optimistic_appends: boolean;
+  inflight_count: number;
   is_in_old_config: boolean;
   is_in_new_config: boolean;
   is_responding_favorably: boolean;
+  vote_granted: boolean;
+}
+
+export interface ServerMetrics {
+  my_addr: string;
+  role: Role;
+  current_term: bigint;
+  current_leader: string | null;
+  commit_idx: bigint;
+  config_idx: bigint;
+  last_log_idx: bigint;
+  voted_for: string | null;
+  is_prevoting: boolean;
+  peer_addresses: string[];
+  peer_addresses_old: string[];
+  peers: PeerMetrics[];
+}
+
+// Internal-only peer state. Kept un-exported so external consumers can't
+// reach in and mutate replication state — use `metrics()` for read-only
+// access or `__test_peer` for explicit test access.
+class Peer {
+  vote_granted = false;
+  match_idx = BigInt(0);
+  next_idx = BigInt(1);
+  inflight_messages = new Map<bigint, Message>();
+  // The largest *request-side* (peer-originated) ID we've processed.
+  // Requests carry IDs from the peer's own slab.
+  max_request_id = BigInt(0);
+  // The largest *response-side* (us-originated) ID we've processed. Response
+  // messages echo our own request ID, drawn from our slab. We track these
+  // separately so an inbound request from peer's slab cannot mask a later
+  // response from our slab (or vice versa) — see the bug fix referenced in
+  // tests/raft.test.ts.
+  max_response_id = BigInt(0);
+  accepting_optimistic_appends = true;
+  is_responding_favorably = false;
 
   constructor(
-    addr: string,
-    is_in_old_config: boolean,
-    is_in_new_config: boolean
-  ) {
-    this.addr = addr;
-    this.vote_granted = false;
-    this.match_idx = BigInt(0);
-    this.next_idx = BigInt(1);
-    this.inflight_messages = new Map();
-    this.max_message_id = BigInt(0);
-    this.accepting_optimistic_appends = true;
-    this.is_in_old_config = is_in_old_config;
-    this.is_in_new_config = is_in_new_config;
-    this.is_responding_favorably = false;
-  }
+    public readonly addr: string,
+    public is_in_old_config: boolean,
+    public is_in_new_config: boolean
+  ) {}
 }
+
+// Test-only access to internal peer state. Only use this from tests; the
+// underscore prefix is a convention to make accidental production use
+// obvious in code review.
+export type TestPeerHandle = Peer;
 
 export class Server extends EventEmitter {
   readonly my_addr: string;
   private timeout_engine: AbstractTimeoutEngine;
   private messaging_engine: AbstractMessagingEngine;
   private db: AbstractStorageEngine;
+  private logger: Logger;
 
   private readonly timeout_ms: number;
   private readonly leader_heartbeat_ms: number;
   private readonly message_timeout_ms: number;
   private readonly id_slab_size: bigint;
+  private readonly max_inflight_per_peer: number;
 
   private role: Role;
   private current_leader: string | null;
   private peers: Map<string, Peer>;
-  private next_message_id: bigint;
+  // Largest message ID we have already returned. The field name is "last"
+  // rather than "next" because `unique_message_id()` returns the
+  // post-incremented value: the first ID handed out after construction is
+  // `last_message_id + 1`.
+  private last_message_id: bigint;
+  // The chunk boundary (inclusive last ID) we have persisted to disk. We
+  // can hand out IDs up through this value without any disk write.
+  private message_id_chunk_end: bigint;
   private state: State;
+  // Shadow copy of the last serialized state. Used so save_state can detect
+  // changes and emit events without a per-call disk read.
+  private saved_state_snapshot: string | null;
   private is_prevoting: boolean;
 
   constructor(
@@ -89,14 +139,19 @@ export class Server extends EventEmitter {
     db: AbstractStorageEngine,
     timeout_engine: AbstractTimeoutEngine,
     messaging_engine: AbstractMessagingEngine,
-    id_slab_size?: bigint
+    options?: ServerOptions | bigint
   ) {
     super();
-    // there's a lot of state so the constructor is pretty sizeable
     this.timeout_engine = timeout_engine;
     this.messaging_engine = messaging_engine;
     this.db = db;
-    this.id_slab_size = id_slab_size || BigInt(1000000);
+    // Backwards-compatible: older callers passed `id_slab_size` directly as
+    // the 6th positional argument.
+    const opts: ServerOptions =
+      typeof options === 'bigint' ? { id_slab_size: options } : options ?? {};
+    this.id_slab_size = opts.id_slab_size ?? BigInt(1000000);
+    this.max_inflight_per_peer = opts.max_inflight_per_peer ?? 1024;
+    this.logger = opts.logger ?? NOOP_LOGGER;
     this.is_prevoting = false;
 
     this.timeout_ms = 2000;
@@ -109,33 +164,42 @@ export class Server extends EventEmitter {
     this.emit('role_change', this.role);
     this.current_leader = null;
     this.peers = new Map();
+    this.saved_state_snapshot = null;
 
-    const next_message_id = this.db.kv_get('message_id_chunk');
-    let chunk = BigInt(0);
-    if (next_message_id) {
-      chunk = BigInt(next_message_id);
-      this.next_message_id = chunk + BigInt(1);
-    } else {
-      this.next_message_id = BigInt(1);
-    }
-    this.db.kv_set('message_id_chunk', (BigInt(1000000) + chunk).toString());
+    // Reserve a slab of message IDs on disk so a crash never reuses an ID.
+    // We start at `chunk + 1` (the first ID the previous instance had not
+    // yet handed out) and pre-claim a fresh slab on construction so callers
+    // that issue a single message do not double-cost (read + write at
+    // first send).
+    const saved_chunk = this.db.kv_get('message_id_chunk');
+    const chunk = saved_chunk ? BigInt(saved_chunk) : BigInt(0);
+    this.last_message_id = chunk + BigInt(1);
+    const new_chunk_end = chunk + this.id_slab_size;
+    this.db.kv_set('message_id_chunk', new_chunk_end.toString());
+    this.message_id_chunk_end = new_chunk_end;
 
-    const state = this.get_state();
+    const state = this.load_state_safely();
     if (state) {
       this.state = state;
       const idx = this.db.last_log_idx();
       if (idx !== BigInt(0)) {
-        const last_log = this.db.get_logs_after(idx - BigInt(1))[0];
-        if (last_log.type === LogType.config && last_log.data !== null) {
-          // state is written after config is written to log.
-          // if crash occurs between the writes, state has an invalid peer set
-          // so if the last log is a config, we populate the state with
-          // the peers in the last log
-          const config = JSON.parse(last_log.data.toString());
-          this.state.peer_addresses = config.new_peers;
-          this.state.peer_addresses_old = config.old_peers;
-          this.state.config_idx = last_log.idx;
-          this.save_state();
+        const logs = this.db.get_logs_after(idx - BigInt(1));
+        const last_log = logs[0];
+        if (
+          last_log &&
+          last_log.type === LogType.config &&
+          last_log.data !== null
+        ) {
+          const config = parse_config_log(last_log.data, this.logger);
+          if (config) {
+            // state is written after config is written to log; if a crash
+            // occurs between the writes the state has an invalid peer set,
+            // so we trust the log over the saved state.
+            this.state.peer_addresses = config.new_peers;
+            this.state.peer_addresses_old = config.old_peers;
+            this.state.config_idx = last_log.idx;
+            this.save_state();
+          }
         }
       }
     } else {
@@ -148,9 +212,29 @@ export class Server extends EventEmitter {
     this.reconcile_peers_with_state();
   }
 
-  // make this server think it's the leader
-  // convenient for testing
-  promote_to_leader(send_noop = false): void {
+  // Read and validate the persisted state. Returns null if no state has been
+  // saved or if the saved state is obviously corrupt — corrupt-state bootstraps
+  // are logged but not fatal so an operator can recover.
+  private load_state_safely(): State | null {
+    const raw = this.db.kv_get('state');
+    if (!raw) return null;
+    try {
+      const s = State.make(raw);
+      if (s) this.saved_state_snapshot = raw;
+      return s;
+    } catch (err) {
+      this.logger.error?.('raft: persisted state failed to parse', { err });
+      return null;
+    }
+  }
+
+  // make this server think it's the leader.
+  //
+  // The default sends a no-op log entry: per Raft §5.4.2 a leader cannot
+  // mark prior-term entries committed without first committing one of its
+  // own term. Pass `false` only in tests that want to inspect the freshly
+  // promoted leader before it appends anything.
+  promote_to_leader(send_noop = true): void {
     this.reset_vote_timeout();
     if (this.role !== Role.leader) {
       this.role = Role.leader;
@@ -161,7 +245,7 @@ export class Server extends EventEmitter {
       this.emit('current_leader', this.my_addr);
     }
     this.reset_volatile_peer_state();
-    for (const [peer_addr, p] of this.peers) {
+    for (const [, p] of this.peers) {
       this.reset_heartbeat(p);
     }
     if (send_noop) {
@@ -212,7 +296,7 @@ export class Server extends EventEmitter {
   }
 
   reconcile_peers_with_state(): void {
-    for (const [peer_name, peer] of this.peers) {
+    for (const [, peer] of this.peers) {
       peer.is_in_new_config = false;
       peer.is_in_old_config = false;
     }
@@ -228,9 +312,8 @@ export class Server extends EventEmitter {
       }
     });
 
-    // go through old peers and add them as old peers if they are not in the set
-    // if they are part of the set, flip se the old config flag to true
-
+    // Walk old peers; if they're already known as new peers, also flag them
+    // as old; otherwise create a new Peer with only the old-config flag set.
     this.state.peer_addresses_old.forEach(peer_addr => {
       if (peer_addr === this.my_addr) {
         return;
@@ -263,12 +346,22 @@ export class Server extends EventEmitter {
       return;
     }
 
-    if (peer.max_message_id >= msg.id) {
+    // Inbound requests are tagged with the peer's slab; responses to our
+    // requests echo IDs from our slab. Track the two sides separately so
+    // an ID from one pool cannot mask later messages from the other pool.
+    const is_response =
+      msg.type === MessageType.vote_response ||
+      msg.type === MessageType.append_response;
+    const max = is_response ? peer.max_response_id : peer.max_request_id;
+    if (max >= msg.id) {
       // received out of order old message, ignoring
       return;
     }
-
-    peer.max_message_id = msg.id;
+    if (is_response) {
+      peer.max_response_id = msg.id;
+    } else {
+      peer.max_request_id = msg.id;
+    }
 
     switch (msg.type) {
       case MessageType.vote_request:
@@ -307,18 +400,18 @@ export class Server extends EventEmitter {
   }
 
   has_vote_majority(): boolean {
-    // count old config vote
+    // While in joint consensus we need a majority of BOTH the old and new
+    // configurations independently (Raft §6).
     const num_old_peers = this.state.peer_addresses_old.length;
     if (num_old_peers !== 0) {
-      // +1 is so required number is rounded up
-      // in case  peers+1 is even
-      let self_in_old = 0;
-      if (this.state.peer_addresses_old.indexOf(this.my_addr) !== -1) {
-        self_in_old = 1;
-      }
+      // +1 is so the required number is rounded up; equivalent to
+      // floor(N/2) + 1, the standard majority formula.
+      const self_in_old = this.state.peer_addresses_old.includes(this.my_addr)
+        ? 1
+        : 0;
       const min_votes = Math.ceil((num_old_peers + 1) / 2);
-      let count = self_in_old; // voting for self
-      for (const [peer_name, peer] of this.peers) {
+      let count = self_in_old;
+      for (const [, peer] of this.peers) {
         if (peer.vote_granted && peer.is_in_old_config) {
           count += 1;
         }
@@ -328,18 +421,14 @@ export class Server extends EventEmitter {
       }
     }
 
-    // count old config vote
     const num_new_peers = this.state.peer_addresses.length;
     if (num_new_peers !== 0) {
-      // +1 is so required number is rounded up
-      // in case  peers+1 is even
-      let self_in_new = 0;
-      if (this.state.peer_addresses.indexOf(this.my_addr) !== -1) {
-        self_in_new = 1;
-      }
+      const self_in_new = this.state.peer_addresses.includes(this.my_addr)
+        ? 1
+        : 0;
       const min_votes = Math.ceil((num_new_peers + 1) / 2);
-      let count = self_in_new; // voting for self
-      for (const [peer_name, peer] of this.peers) {
+      let count = self_in_new;
+      for (const [, peer] of this.peers) {
         if (peer.vote_granted && peer.is_in_new_config) {
           count += 1;
         }
@@ -351,6 +440,11 @@ export class Server extends EventEmitter {
     return true;
   }
 
+  // Returns a freshly-loaded copy of the persisted state. Most callers
+  // should use `metrics()` instead. We keep this around for backwards
+  // compatibility with external consumers; internal save-state diffing uses
+  // the in-memory `saved_state_snapshot` to avoid a disk round-trip on every
+  // mutation.
   get_state(): State | null {
     const state = this.db.kv_get('state');
     if (!state) {
@@ -360,22 +454,33 @@ export class Server extends EventEmitter {
   }
 
   save_state(): void {
-    // for debug logging purposes only
-    const old_state = this.get_state();
-
-    this.db.kv_set('state', this.state.toString());
-
-    if (!old_state) {
+    const serialized = this.state.toString();
+    if (serialized === this.saved_state_snapshot) {
+      // Nothing to do; the in-memory state hasn't changed since we last
+      // wrote. Skip the disk write entirely.
       return;
     }
-    if (old_state.current_term !== this.state.current_term) {
+
+    // Compute event diffs against the in-memory snapshot rather than
+    // re-reading from disk.
+    const old =
+      this.saved_state_snapshot !== null
+        ? State.make(this.saved_state_snapshot)
+        : null;
+
+    this.db.kv_set('state', serialized);
+    this.saved_state_snapshot = serialized;
+
+    if (!old) {
+      return;
+    }
+    if (old.current_term !== this.state.current_term) {
       this.emit('term', this.state.current_term);
     }
-    if (old_state.commit_idx !== this.state.commit_idx) {
+    if (old.commit_idx !== this.state.commit_idx) {
       this.emit('commit_idx', this.state.commit_idx);
     }
-
-    if (old_state.voted_for !== this.state.voted_for) {
+    if (old.voted_for !== this.state.voted_for) {
       this.emit('voted_for', this.state.voted_for);
     }
   }
@@ -405,7 +510,7 @@ export class Server extends EventEmitter {
   }
 
   reset_inflight_messages(peer: Peer): void {
-    for (const [id, message] of peer.inflight_messages) {
+    for (const [id] of peer.inflight_messages) {
       this.timeout_engine.clear(id.toString());
     }
     peer.inflight_messages = new Map();
@@ -456,13 +561,12 @@ export class Server extends EventEmitter {
       }
     }
     if (this.role === Role.leader) {
-      // make sure we got some sort of message from the majority of the cluster
-      // within the vote timeout
-      // if we did, we continue to be the
-      // if we didn't, then we want to avoid perpetuating a split-brain, so we step down
-      // and try to win a vote
+      // Make sure we got some sort of message from a majority of the cluster
+      // within the vote timeout. If we did, we continue to be the leader.
+      // If we didn't, we step down to avoid perpetuating a split-brain and
+      // try to win a vote afresh.
       let num_messages = 0;
-      for (const [peer_addr, peer] of this.peers) {
+      for (const [, peer] of this.peers) {
         if (peer.is_responding_favorably === true) {
           peer.is_responding_favorably = false;
           num_messages++;
@@ -493,7 +597,11 @@ export class Server extends EventEmitter {
         term,
         true
       );
-      this.send(peer, message);
+      // IMPORTANT: register the inflight message and the message-timeout
+      // BEFORE sending. A synchronous transport (in-memory bus, fast local
+      // socket, etc.) can deliver the response inside `this.send(...)`. If
+      // we registered after sending, `pop_inflight_message` would return
+      // null for that early response and we would silently drop it.
       this.timeout_engine.set(
         message_id.toString(),
         this.message_timeout_ms,
@@ -502,8 +610,17 @@ export class Server extends EventEmitter {
         }
       );
       peer.inflight_messages.set(message_id, message);
+      this.send(peer, message);
     }
     this.reset_vote_timeout();
+
+    // Single-node clusters (and any config where self alone constitutes a
+    // majority) would otherwise wait forever for peer responses that will
+    // never arrive. Self-vote is implicit, so check majority eagerly.
+    if (this.has_vote_majority()) {
+      this.is_prevoting = false;
+      this.candidate_start_vote();
+    }
   }
 
   candidate_start_vote(): void {
@@ -537,7 +654,7 @@ export class Server extends EventEmitter {
         term,
         false
       );
-      this.send(peer, message);
+      // Register-before-send: see candidate_start_prevote for rationale.
       this.timeout_engine.set(
         message_id.toString(),
         this.message_timeout_ms,
@@ -546,40 +663,72 @@ export class Server extends EventEmitter {
         }
       );
       peer.inflight_messages.set(message_id, message);
+      this.send(peer, message);
     }
     this.reset_vote_timeout();
+
+    // Same eager-majority check as in prevote so a single-node cluster (or a
+    // configuration where self alone is a quorum) can become leader without
+    // waiting for nonexistent peer responses.
+    if (this.has_vote_majority()) {
+      this.promote_to_leader(true);
+    }
   }
 
   unique_message_id(): bigint {
-    if (this.next_message_id % this.id_slab_size === BigInt(0)) {
-      this.db.kv_set(
-        'message_id_chunk',
-        (this.next_message_id + this.id_slab_size).toString()
-      );
+    // We've used up the persisted slab; reserve another one before handing
+    // out the next ID so a crash never leads to ID reuse.
+    if (this.last_message_id >= this.message_id_chunk_end) {
+      const new_chunk_end = this.last_message_id + this.id_slab_size;
+      this.db.kv_set('message_id_chunk', new_chunk_end.toString());
+      this.message_id_chunk_end = new_chunk_end;
     }
-    this.next_message_id++;
-    return this.next_message_id;
+    this.last_message_id = this.last_message_id + BigInt(1);
+    return this.last_message_id;
   }
 
   send_append_entry(peer: Peer, message: AppendRequest) {
+    // Soft cap: a slow peer can otherwise let us accumulate one inflight
+    // entry per client request without bound. Drop the oldest so memory
+    // stays bounded — the heartbeat will retry whatever the peer needs
+    // anyway.
+    while (peer.inflight_messages.size >= this.max_inflight_per_peer) {
+      const oldest = peer.inflight_messages.keys().next().value;
+      if (oldest === undefined) break;
+      peer.inflight_messages.delete(oldest);
+      this.timeout_engine.clear(oldest.toString());
+    }
+
     this.reset_heartbeat(peer);
-    this.send(peer, message);
 
-    this.timeout_engine.set(
-      message.id.toString(),
-      this.message_timeout_ms,
-      () => {
-        peer.inflight_messages.delete(message.id);
-        // todo, maybe we should not wait for as long as the heartbeat since we know that this peer
-        // has missing logs, but also the peer isn't responding, so it may be down.
-        // for now we wait for the heartbeat, or a new append, to kickstart communication again
-      }
+    // Register-before-send so a synchronous transport's response cannot beat
+    // the inflight-tracking insert and get silently dropped by
+    // pop_inflight_message. We capture the logs before clearing them off
+    // the message because we mutate it in place to free the payload.
+    const id = message.id;
+    this.timeout_engine.set(id.toString(), this.message_timeout_ms, () => {
+      peer.inflight_messages.delete(id);
+      // We could retry sooner than the heartbeat (we know this peer has
+      // missing logs) but the peer might also just be down, so we let the
+      // heartbeat or the next append kickstart communication again.
+    });
+    // We keep a copy of the request without the log payload because logs can
+    // be large and we don't want to retain them in memory longer than
+    // needed; the inflight entry is only used to correlate the response.
+    const tracked = new AppendRequest(
+      message.id,
+      message.from,
+      message.to,
+      message.term,
+      message.prev_idx,
+      message.prev_term,
+      message.commit_idx,
+      message.last_idx,
+      []
     );
+    peer.inflight_messages.set(message.id, tracked);
 
-    // We delete the logs from the saved request as the logs can get large
-    // so and we don't want to save them too long in-memory
-    message.logs = [];
-    peer.inflight_messages.set(message.id, message);
+    this.send(peer, message);
   }
 
   leader_append_entry(log: Log): void {
@@ -593,12 +742,12 @@ export class Server extends EventEmitter {
     log.term = this.state.current_term;
 
     this.db.add_log_to_storage(log);
-    for (const [peer_addr, peer] of this.peers) {
+    for (const [, peer] of this.peers) {
       if (
         peer.accepting_optimistic_appends ||
         peer.inflight_messages.size === 0
       ) {
-        // from: 'this.me' doubles up as leader_id
+        // 'this.my_addr' doubles as the leader_id field of the message
         const message = new AppendRequest(
           this.unique_message_id(),
           this.my_addr,
@@ -699,16 +848,28 @@ export class Server extends EventEmitter {
       }
     });
     if (conf_log.type === LogType.config && conf_log.data) {
-      const config = JSON.parse(conf_log.data.toString());
-      this.emit('peer_config_change', config);
-      this.state.config_idx = conf_log.idx;
-      this.state.peer_addresses = config.new_peers;
-      this.state.peer_addresses_old = config.old_peers;
-      this.reconcile_peers_with_state();
+      const config = parse_config_log(conf_log.data, this.logger);
+      if (config) {
+        this.emit('peer_config_change', config);
+        this.state.config_idx = conf_log.idx;
+        this.state.peer_addresses = config.new_peers;
+        this.state.peer_addresses_old = config.old_peers;
+        this.reconcile_peers_with_state();
+      }
     }
     const previous_commit_idx = this.state.commit_idx;
-    this.state.commit_idx = bigint_min(msg.commit_idx, this.db.last_log_idx());
-    if (previous_commit_idx !== this.state.commit_idx || conf_log !== null) {
+    // commit_idx must be monotonically increasing on a follower (Raft §5.3).
+    // Only advance if the leader's commit_idx is strictly greater.
+    if (msg.commit_idx > this.state.commit_idx) {
+      this.state.commit_idx = bigint_min(
+        msg.commit_idx,
+        this.db.last_log_idx()
+      );
+    }
+    if (
+      previous_commit_idx !== this.state.commit_idx ||
+      conf_log.type === LogType.config
+    ) {
       this.save_state();
     }
     this.reset_vote_timeout();
@@ -735,7 +896,7 @@ export class Server extends EventEmitter {
       idxes_old.push(last_log_idx);
     }
 
-    for (const [peer_name, peer] of this.peers) {
+    for (const [, peer] of this.peers) {
       if (peer.is_in_old_config) {
         idxes_old.push(peer.match_idx);
       }
@@ -744,8 +905,10 @@ export class Server extends EventEmitter {
       }
     }
 
-    idxes.sort().reverse();
-    idxes_old.sort().reverse();
+    // descending sort using a numeric comparator; the default Array.sort
+    // coerces to strings which is wrong for bigints (e.g. "10" < "2").
+    idxes.sort(bigint_cmp).reverse();
+    idxes_old.sort(bigint_cmp).reverse();
 
     // 1 num = 1 idx = 0 : floor(1/2) = 0 rev_idx = 0
     // 2 num = 2 idx = 1 : floor(2/2) = 1 rev_idx = 0
@@ -801,21 +964,24 @@ export class Server extends EventEmitter {
     msg: AppendResponse,
     peer: Peer
   ): void {
-    // const peer_state = this.peers[msg.from]
+    // If the responder is on a strictly higher term, we must step down.
+    // Without this, a stale leader would keep retrying forever after a
+    // partition heals.
+    if (msg.term > this.state.current_term) {
+      this.step_down(msg.term);
+      return;
+    }
+
     if (msg.success === false) {
-      // step back one
-      if (peer.next_idx <= BigInt(0)) {
-        // The peer has rejected everything!
-        // The least surprising thing to do is to retry, starting by sending the last
-        // log on ther server?
-        // TODO log this?
-        peer.next_idx = this.db.last_log_idx() - BigInt(1);
-      } else {
-        // we're still searching for a common log,
-        // even if the search is ongoing, the peer is
-        // responding in a favoriable way
-        peer.is_responding_favorably = true;
+      // We're still searching for a common log: even though the search is
+      // ongoing the peer is responding in a favorable way.
+      peer.is_responding_favorably = true;
+      // Floor at 1 (logs are 1-indexed); decrementing past 1 lands on
+      // prev_idx=0 which is the well-defined "before-the-log" sentinel.
+      if (peer.next_idx > BigInt(1)) {
         peer.next_idx = peer.next_idx - BigInt(1);
+      } else {
+        peer.next_idx = BigInt(1);
       }
       // shutoff optimistic appends
       peer.accepting_optimistic_appends = false;
@@ -948,4 +1114,72 @@ export class Server extends EventEmitter {
     );
     this.messaging_engine.send(peer.addr, message);
   }
+
+  /**
+   * Read-only snapshot of the server's state suitable for metrics export
+   * or operator dashboards. Pulls everything from in-memory state — no disk
+   * read involved — so it is safe to call at high frequency.
+   */
+  metrics(): ServerMetrics {
+    const peers: PeerMetrics[] = [];
+    for (const [, peer] of this.peers) {
+      peers.push({
+        addr: peer.addr,
+        match_idx: peer.match_idx,
+        next_idx: peer.next_idx,
+        inflight_count: peer.inflight_messages.size,
+        is_in_old_config: peer.is_in_old_config,
+        is_in_new_config: peer.is_in_new_config,
+        is_responding_favorably: peer.is_responding_favorably,
+        vote_granted: peer.vote_granted,
+      });
+    }
+    return {
+      my_addr: this.my_addr,
+      role: this.role,
+      current_term: this.state.current_term,
+      current_leader: this.current_leader,
+      commit_idx: this.state.commit_idx,
+      config_idx: this.state.config_idx,
+      last_log_idx: this.db.last_log_idx(),
+      voted_for: this.state.voted_for,
+      is_prevoting: this.is_prevoting,
+      peer_addresses: [...this.state.peer_addresses],
+      peer_addresses_old: [...this.state.peer_addresses_old],
+      peers,
+    };
+  }
+}
+
+interface ParsedConfig {
+  old_peers: string[];
+  new_peers: string[];
+}
+
+// Validate that the bytes on disk really represent a `{old_peers, new_peers}`
+// shape. Returns null on any error (parse, type, structure) and logs at
+// error level so operators can see corruption rather than silently crashing
+// later when we try to iterate the peers.
+function parse_config_log(data: Buffer, logger: Logger): ParsedConfig | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data.toString());
+  } catch (err) {
+    logger.error?.('raft: config log payload is not valid JSON', { err });
+    return null;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    !Array.isArray((parsed as ParsedConfig).old_peers) ||
+    !Array.isArray((parsed as ParsedConfig).new_peers) ||
+    (parsed as ParsedConfig).old_peers.some(p => typeof p !== 'string') ||
+    (parsed as ParsedConfig).new_peers.some(p => typeof p !== 'string')
+  ) {
+    logger.error?.('raft: config log payload has unexpected shape', {
+      parsed,
+    });
+    return null;
+  }
+  return parsed as ParsedConfig;
 }

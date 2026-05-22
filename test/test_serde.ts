@@ -7,11 +7,11 @@ export class TestSerde extends AbstractSerde {
   constructor() {
     super();
   }
-  encode(message: Message): BufferList | undefined {
+  encode(_message: Message): BufferList | undefined {
     return undefined;
   }
 
-  decode(data: Buffer): Message | undefined {
+  decode(_data: Buffer): Message | undefined {
     return undefined;
   }
 }

@@ -122,7 +122,6 @@ export class MsgpackSerde extends AbstractSerde {
     const id = BigInt(arr[0]);
     const from = arr[1];
     const to = arr[2];
-    const type: MessageType = arr[3];
     const term = BigInt(arr[4]);
 
     switch (arr[3]) {

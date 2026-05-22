@@ -1,6 +1,7 @@
 // http messaging with msgpack payloads
 import * as http from 'http';
 import { AbstractMessagingEngine, AbstractSerde } from './interfaces';
+import { Logger } from './logger';
 import { Message } from './messages';
 
 export class HttpMessagingEngine extends AbstractMessagingEngine {
@@ -8,8 +9,8 @@ export class HttpMessagingEngine extends AbstractMessagingEngine {
   private http_server: http.Server;
   private open_connections: Map<string, http.ServerResponse>;
 
-  constructor(serde: AbstractSerde) {
-    super(serde);
+  constructor(serde: AbstractSerde, logger?: Logger) {
+    super(serde, logger);
     this.http_client_agent = new http.Agent({ keepAlive: true });
     this.http_server = http.createServer((req, res) =>
       this.http_callback(req, res)
@@ -75,7 +76,7 @@ export class HttpMessagingEngine extends AbstractMessagingEngine {
       });
 
       res.on('error', err => {
-        console.log('received error', err);
+        this.logger.debug?.('http: client received error', { err });
       });
     });
     request.end(wire_message);
@@ -102,25 +103,27 @@ export class HttpMessagingEngine extends AbstractMessagingEngine {
       const open_connection = this.open_connections.get(msg.from);
       if (open_connection) {
         // agent will cache these connections if needed
-        console.log('ending connection because one already open');
+        this.logger.debug?.(
+          'http: ending connection because one already open',
+          { from: msg.from }
+        );
         res.end();
       } else {
         // keep this response open and use it if a message needs a response back
         res.on('error', err => {
-          console.log('response has error, removing');
+          this.logger.debug?.('http: response has error, removing', {
+            from: msg.from,
+            err,
+          });
           this.open_connections.delete(msg.from);
         });
         this.open_connections.set(msg.from, res);
       }
-      const d = this.decode(data);
-      if (!d) {
-        return;
-      }
-      this.emit('message', d);
+      this.emit('message', msg);
     });
 
     req.on('error', err => {
-      console.log('request error', err);
+      this.logger.debug?.('http: request error', { err });
     });
   }
 }

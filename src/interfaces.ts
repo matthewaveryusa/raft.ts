@@ -1,5 +1,6 @@
 import { Log, Message } from './messages';
 import { EventEmitter } from 'events';
+import { Logger, NOOP_LOGGER } from './logger';
 import BufferList = require('bl');
 
 export type variance_func_t = (timeout_ms: number) => number;
@@ -28,8 +29,10 @@ export abstract class AbstractStorageEngine {
 }
 
 export abstract class AbstractMessagingEngine extends EventEmitter {
-  constructor(private serde: AbstractSerde) {
+  protected logger: Logger;
+  constructor(private serde: AbstractSerde, logger: Logger = NOOP_LOGGER) {
     super();
+    this.logger = logger;
   }
   encode(message: Message): BufferList | undefined {
     return this.serde.encode(message);

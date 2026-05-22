@@ -1,19 +1,37 @@
 // sqlite storage
-import * as sqlite from 'better-sqlite3';
+import sqlite = require('better-sqlite3');
 import { AbstractStorageEngine } from './interfaces';
-import { Log } from './messages';
+import { Log, LogType } from './messages';
+
+interface KvRow {
+  value: string;
+}
+interface LogTermRow {
+  term: string;
+}
+interface IdxRow {
+  idx: string;
+}
+interface LogRow {
+  idx: string;
+  term: string;
+  data: Buffer | null;
+  type: LogType;
+}
 
 export class SqliteStorageEngine extends AbstractStorageEngine {
   private db: sqlite.Database;
 
-  private log_term_sql: sqlite.Statement;
-  private last_log_idx_sql: sqlite.Statement;
-  private add_log_sql: sqlite.Statement;
-  private delete_invalid_logs_sql: sqlite.Statement;
-  private get_log_sql: sqlite.Statement;
-  private get_logs_sql: sqlite.Statement;
-  private kv_get_sql: sqlite.Statement;
-  private kv_set_sql: sqlite.Statement;
+  private log_term_sql: sqlite.Statement<[string], LogTermRow>;
+  private last_log_idx_sql: sqlite.Statement<[], IdxRow>;
+  private add_log_sql: sqlite.Statement<
+    [string, string, Buffer | null, string]
+  >;
+  private delete_invalid_logs_sql: sqlite.Statement<[string]>;
+  private get_log_sql: sqlite.Statement<[string], LogRow>;
+  private get_logs_sql: sqlite.Statement<[string], LogRow>;
+  private kv_get_sql: sqlite.Statement<[string], KvRow>;
+  private kv_set_sql: sqlite.Statement<[string, string]>;
 
   private cached_log_idx: bigint | null;
 
@@ -26,7 +44,6 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
   CREATE UNIQUE INDEX IF NOT EXISTS log_idx_term on log(idx, term, dirty);
   CREATE UNIQUE INDEX IF NOT EXISTS log_idx on log(idx, dirty);
   `);
-    // sql
     this.cached_log_idx = null;
     this.log_term_sql = this.db.prepare(
       `select CAST(term as TEXT) as term
@@ -66,11 +83,7 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
 
   kv_get(key: string): string | null {
     const row = this.kv_get_sql.get(key);
-    if (row) {
-      return row.value;
-    } else {
-      return null;
-    }
+    return row ? row.value : null;
   }
 
   kv_set(key: string, value: string): void {
@@ -80,22 +93,18 @@ export class SqliteStorageEngine extends AbstractStorageEngine {
   get_logs_after(idx: bigint): Log[] {
     return this.get_logs_sql
       .all(idx.toString())
-      .map(val => new Log(val.type, val.idx, val.term, val.data));
+      .map(val => new Log(val.type, BigInt(val.idx), BigInt(val.term), val.data));
   }
 
   log_term(idx: bigint): bigint {
     const row = this.log_term_sql.get(idx.toString());
-    if (row) {
-      return BigInt(row.term);
-    } else {
-      return BigInt(0);
-    }
+    return row ? BigInt(row.term) : BigInt(0);
   }
 
   last_log_idx(): bigint {
     if (this.cached_log_idx === null) {
       const row = this.last_log_idx_sql.get();
-      this.cached_log_idx = BigInt(row.idx);
+      this.cached_log_idx = row ? BigInt(row.idx) : BigInt(0);
     }
     return this.cached_log_idx;
   }

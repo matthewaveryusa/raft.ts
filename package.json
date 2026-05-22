@@ -9,40 +9,43 @@
   ],
   "license": "Apache-2.0",
   "keywords": [],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "mocha",
     "coverage": "nyc mocha",
-    "check": "gts check",
-    "clean": "gts clean",
+    "clean": "rm -rf build coverage .nyc_output",
     "compile": "tsc -p .",
-    "fix": "gts fix",
+    "lint": "eslint 'src/**/*.ts' 'test/**/*.ts' 'examples/**/*.ts'",
+    "format": "eslint --fix 'src/**/*.ts' 'test/**/*.ts' 'examples/**/*.ts'",
+    "typecheck": "tsc -p . --noEmit",
     "prepare": "npm run compile",
-    "pretest": "npm run compile",
-    "posttest": "npm run check"
+    "pretest": "npm run compile"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^5.4.0",
+    "@eslint/js": "^9.39.4",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/bl": "^2.1.0",
-    "@types/chai": "^4.2.11",
-    "@types/mocha": "^7.0.2",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
     "@types/msgpack5": "^3.4.1",
-    "@types/node": "^10.17.21",
-    "chai": "^4.2.0",
-    "gts": "^1.1.2",
-    "mocha": "^7.1.2",
+    "@types/node": "^20.19.41",
+    "@types/ws": "^8.18.1",
+    "chai": "^4.5.0",
+    "eslint": "^9.39.4",
+    "mocha": "^10.8.2",
     "nyc": "^15.0.1",
-    "typescript": "~3.7.0"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.4"
   },
   "dependencies": {
-    "@types/mqtt": "^2.5.0",
-    "@types/redis": "^2.8.21",
-    "better-sqlite3": "^7.0.1",
+    "better-sqlite3": "^11.10.0",
     "bl": "^4.0.2",
     "del": "^5.1.0",
-    "mqtt": "^4.0.1",
-    "msgpack5": "^4.2.1",
-    "node-lmdb": "^0.8.0",
-    "redis": "^3.0.2",
-    "ts-node": "^8.10.1"
+    "lmdb": "^3.5.4",
+    "mqtt": "^4.3.8",
+    "msgpack5": "^4.2.1"
   }
 }

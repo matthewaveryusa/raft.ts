@@ -14,7 +14,8 @@ export class State {
       string[],
       string
     ] = JSON.parse(str);
-    if (arr.length < 4) {
+    // we serialize 6 fields so a shorter array is malformed
+    if (arr.length < 6) {
       return null;
     }
     const s = new State();
@@ -43,13 +44,16 @@ export class State {
   }
 
   toString(): string {
-    this.peer_addresses.sort();
+    // Sort copies, not the receivers — `peer_addresses` and
+    // `peer_addresses_old` are referenced by external code (the test harness,
+    // peer reconciliation, on-the-wire config logs) so reordering them on
+    // every save would be a quiet correctness hazard.
     return JSON.stringify([
       this.current_term.toString(),
       this.commit_idx.toString(),
       this.voted_for,
-      this.peer_addresses,
-      this.peer_addresses_old,
+      [...this.peer_addresses].sort(),
+      [...this.peer_addresses_old].sort(),
       this.config_idx.toString(),
     ]);
   }

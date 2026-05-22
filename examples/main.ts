@@ -1,11 +1,10 @@
-import { UDPMessagingEngine } from './udp_messaging';
-import { HttpMessagingEngine } from './http_messaging';
-import { NodeTimeoutEngine } from './node_timeout';
-import { ClientError, Server } from './server';
-import { SqliteStorageEngine } from './sqlite_storage';
-import { MsgpackSerde } from './msgpack_serde';
-import { MemStorage } from './mem_storage';
-import { LmdbStorageEngine } from './lmdb_storage';
+import { HttpMessagingEngine } from '../src/http_messaging';
+import { NodeTimeoutEngine } from '../src/node_timeout';
+import { ClientError, Server } from '../src/server';
+import { SqliteStorageEngine } from '../src/sqlite_storage';
+import { MsgpackSerde } from '../src/msgpack_serde';
+import { MemStorage } from '../src/mem_storage';
+import { LmdbStorageEngine } from '../src/lmdb_storage';
 
 const config = ['127.0.0.1:9000', '127.0.0.1:9001', '127.0.0.1:9002'];
 const servers: Server[] = [];

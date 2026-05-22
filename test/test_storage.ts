@@ -75,7 +75,7 @@ export class TestStorageEngine extends AbstractStorageEngine {
     );
   }
 
-  latest_config_before_or_at(idx: bigint): Log | null {
+  latest_config_before_or_at(_idx: bigint): Log | null {
     return null;
   }
 }

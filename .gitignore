@@ -5,4 +5,7 @@ node_modules/**
 .nyc_output/**
 test.lmdb
 test.lmdb/**
+test.lmdb*
 test.sqlite3
+*.log
+.DS_Store

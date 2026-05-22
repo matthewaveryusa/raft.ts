@@ -1,123 +1,120 @@
-import { mkdirSync } from 'fs';
-import mp = require('msgpack5');
-import { Cursor, Dbi, Env } from 'node-lmdb';
+import { open, RootDatabase } from 'lmdb';
 import * as path from 'path';
 import { AbstractStorageEngine } from './interfaces';
 import { Log } from './messages';
 
-const msgpack = mp();
+// LMDB-backed storage. Uses two named sub-databases under one root: a flat
+// key/value store and a numerically-keyed log store.
+//
+// Keys for the log store are zero-padded decimal strings. LMDB sorts these
+// lexicographically, which matches numeric order because the padding width
+// is fixed.
+const LOG_KEY_WIDTH = 20;
+
+function pad(idx: bigint): string {
+  return idx.toString().padStart(LOG_KEY_WIDTH, '0');
+}
+
+interface SerializedLog {
+  type: string;
+  term: string;
+  data: Buffer | null;
+}
 
 export class LmdbStorageEngine extends AbstractStorageEngine {
   private cached_log_idx: bigint | null;
-  private env: Env;
-  private kvdb: Dbi;
-  private logdb: Dbi;
+  private root: RootDatabase;
+  private kvdb: ReturnType<RootDatabase['openDB']>;
+  private logdb: ReturnType<RootDatabase['openDB']>;
 
   constructor(db_name: string, db_size_bytes: number) {
     super();
     this.cached_log_idx = null;
-    this.env = new Env();
-
-    const my_path = path.join(db_name);
-    this.env.open({
+    this.root = open({
+      path: path.join(db_name),
       mapSize: db_size_bytes,
       maxDbs: 2,
-      path: my_path,
+      compression: false,
     });
-
-    this.kvdb = this.env.openDbi({
-      create: true, // will create if database did not exist
-      name: 'key',
-    });
-
-    this.logdb = this.env.openDbi({
-      create: true, // will create if database did not exist
+    this.kvdb = this.root.openDB({ name: 'key' });
+    this.logdb = this.root.openDB({
       name: 'log',
+      // structured-clone-friendly: we serialize logs to a small object
+      encoding: 'msgpack',
     });
   }
 
   kv_get(key: string): string | null {
-    const txn = this.env.beginTxn();
-    const value = txn.getString(this.kvdb, key);
-    txn.commit();
-    return value;
+    const v = this.kvdb.get(key);
+    return typeof v === 'string' ? v : v == null ? null : String(v);
   }
 
   kv_set(key: string, value: string): void {
-    const txn = this.env.beginTxn();
-    txn.putString(this.kvdb, key, value);
-    txn.commit();
+    this.kvdb.putSync(key, value);
   }
 
   get_logs_after(idx: bigint): Log[] {
     const logs: Log[] = [];
-    const txn = this.env.beginTxn();
-    const cursor = new Cursor(txn, this.logdb);
-    idx++;
-    for (
-      let found = cursor.goToRange(idx.toString().padStart(20, '0'));
-      found !== null;
-      found = cursor.goToNext()
-    ) {
-      const data = msgpack.decode(cursor.getCurrentBinary());
-      const log = new Log(data[2], BigInt(found), BigInt(data[0]), data[1]);
-      logs.push(log);
+    const start = pad(idx + BigInt(1));
+    for (const { key, value } of this.logdb.getRange({ start })) {
+      const row = value as SerializedLog;
+      logs.push(
+        new Log(
+          row.type as Log['type'],
+          BigInt(key as string),
+          BigInt(row.term),
+          row.data ?? null
+        )
+      );
     }
-    txn.commit();
     return logs;
   }
 
   log_term(idx: bigint): bigint {
-    const txn = this.env.beginTxn();
-    const value = txn.getBinary(this.logdb, idx.toString().padStart(20, '0'));
-    txn.commit();
-    if (value) {
-      const row = msgpack.decode(value);
-      return BigInt(row[0]);
-    } else {
+    if (idx === BigInt(0)) {
       return BigInt(0);
     }
+    const v = this.logdb.get(pad(idx)) as SerializedLog | undefined;
+    return v ? BigInt(v.term) : BigInt(0);
   }
 
   last_log_idx(): bigint {
     if (this.cached_log_idx === null) {
-      const txn = this.env.beginTxn();
-      const cursor = new Cursor(txn, this.logdb);
-      const idx = cursor.goToLast();
-      txn.commit();
-      if (idx) {
-        this.cached_log_idx = BigInt(idx);
-      } else {
-        this.cached_log_idx = BigInt(0);
+      // getRange with reverse:true and limit:1 gives us the highest key.
+      const iter = this.logdb.getRange({ reverse: true, limit: 1 });
+      let last: bigint = BigInt(0);
+      for (const { key } of iter) {
+        last = BigInt(key as string);
       }
+      this.cached_log_idx = last;
     }
     return this.cached_log_idx;
   }
 
   add_log_to_storage(log: Log): void {
-    const txn = this.env.beginTxn();
-    txn.putBinary(
-      this.logdb,
-      log.idx.toString().padStart(20, '0'),
-      msgpack.encode([log.term.toString(), log.data, log.type]).slice()
-    );
-    txn.commit();
+    const row: SerializedLog = {
+      type: log.type,
+      term: log.term.toString(),
+      data: log.data,
+    };
+    this.logdb.putSync(pad(log.idx), row);
     this.cached_log_idx = log.idx;
   }
 
   delete_invalid_logs_from_storage(idx: bigint): void {
-    const txn = this.env.beginTxn();
-    const cursor = new Cursor(txn, this.logdb);
-    // one after
-    idx++;
-    for (
-      let found = cursor.goToRange(idx.toString().padStart(20, '0'));
-      found !== null;
-      found = cursor.goToNext()
-    ) {
-      cursor.del();
+    // Mark every log with key strictly greater than `idx` as deleted.
+    const start = pad(idx + BigInt(1));
+    const keys: string[] = [];
+    for (const { key } of this.logdb.getRange({ start })) {
+      keys.push(key as string);
     }
-    txn.commit();
+    for (const k of keys) {
+      this.logdb.removeSync(k);
+    }
     this.cached_log_idx = null;
+  }
+
+  close(): void {
+    this.root.close();
   }
 }
